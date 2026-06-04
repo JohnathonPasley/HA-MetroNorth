@@ -74,7 +74,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 return window.interval
         return self._default_interval
 
-    async def _async_refresh(self) -> None:
+    async def _async_refresh(self, **kwargs) -> None:
         """Update the poll interval before re-scheduling."""
         new_interval = timedelta(seconds=self._get_current_interval())
         if new_interval != self.update_interval:
@@ -82,7 +82,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 "Metro North poll interval → %s s", new_interval.total_seconds()
             )
             self.update_interval = new_interval
-        await super()._async_refresh()
+        await super()._async_refresh(**kwargs)
 
     async def _async_update_data(self) -> dict[str, Any]:
         # Keep static GTFS fresh in the background (non-blocking on failure)
