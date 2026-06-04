@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MTA Metro North Setup",
+        "description": "Connect to the MTA Metro North real-time train feed. An API key is optional but recommended — register free at https://api.mta.info.",
+        "data": {
+          "api_key": "MTA API Key (optional)",
+          "stations": "Home Station (Harlem Line)",
+          "update_interval": "Refresh Interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to reach the MTA feed. Check your network connection.",
+      "invalid_api_key": "The API key was rejected (HTTP 403).",
+      "no_stations": "Select at least one station."
+    },
+    "abort": {
+      "already_configured": "Metro North is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Metro North Options",
+        "data": {
+          "api_key": "MTA API Key (optional)",
+          "stations": "Home Station (Harlem Line)",
+          "update_interval": "Refresh Interval (seconds)"
+        }
+      }
+    }
+  }
+}
