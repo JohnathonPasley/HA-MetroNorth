@@ -7,7 +7,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import (
-    CONF_API_KEY,
     CONF_DEFAULT_INTERVAL,
     CONF_PEAK_1_END,
     CONF_PEAK_1_INTERVAL,
@@ -56,7 +55,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = MetroNorthCoordinator(
         hass=hass,
         gtfs_static=gtfs_static,
-        api_key=config.get(CONF_API_KEY),
         default_interval=int(config.get(CONF_DEFAULT_INTERVAL, DEFAULT_OFF_PEAK_INTERVAL)),
         peak_windows=_build_peak_windows(config),
     )

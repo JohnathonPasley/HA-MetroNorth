@@ -2,16 +2,15 @@
   "config": {
     "step": {
       "user": {
-        "title": "MTA Metro North — Connect",
-        "description": "Enter an optional MTA API key (free at https://api.mta.info) and select your stations. Station names are loaded from the MTA static GTFS feed.",
+        "title": "MTA Metro North — Select Stations",
+        "description": "Station names are loaded from the MTA static GTFS feed. Select one or more stations to monitor.",
         "data": {
-          "api_key": "MTA API Key (optional)",
           "stations": "Stations to monitor"
         }
       },
       "schedule": {
         "title": "MTA Metro North — Poll Schedule",
-        "description": "Set how often to refresh real-time data. Peak windows (e.g. commute hours) use a faster rate; all other times use the default interval.",
+        "description": "Set how often to refresh real-time data. Peak windows (e.g. commute hours) poll more frequently; all other times use the default interval.",
         "data": {
           "peak_1_start": "Peak window 1 — start",
           "peak_1_end": "Peak window 1 — end",
@@ -24,8 +23,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Unable to reach the MTA feed. Check your network connection.",
-      "invalid_api_key": "The API key was rejected (HTTP 403).",
+      "cannot_connect": "Unable to reach the MTA feed — check your network connection.",
       "no_stations": "Select at least one station."
     },
     "abort": {
@@ -37,7 +35,6 @@
       "init": {
         "title": "Metro North Options",
         "data": {
-          "api_key": "MTA API Key (optional)",
           "stations": "Stations to monitor",
           "peak_1_start": "Peak window 1 — start",
           "peak_1_end": "Peak window 1 — end",

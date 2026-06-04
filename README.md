@@ -27,13 +27,12 @@ A Home Assistant custom integration for **MTA Metro North Railroad** (Harlem Lin
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **MTA Metro North**
-3. Select your home station from the Harlem Line dropdown
-4. Optionally enter your MTA API key (free — register at https://api.mta.info)
-5. Set the refresh interval (default 30 s, minimum 15 s)
+3. Select one or more stations from the dropdown (populated from the live MTA GTFS feed)
+4. Configure peak polling windows and off-peak interval on the next screen
 
 ### API Key
 
-The MTA feed at `https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr` works without a key for casual polling, but the MTA recommends registering for a free API key to avoid rate limiting. Pass it in as an `x-api-key` header via the integration config.
+No API key required. As of 2024, the MTA removed the API key requirement for all real-time GTFS feeds. The integration connects directly to the feed with no registration or authentication.
 
 ## Entities Created
 

@@ -3,7 +3,6 @@
 DOMAIN = "metro_north"
 
 # Config entry keys
-CONF_API_KEY = "api_key"
 CONF_STATIONS = "stations"
 CONF_DEFAULT_INTERVAL = "default_interval"
 CONF_PEAK_1_START = "peak_1_start"

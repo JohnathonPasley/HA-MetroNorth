@@ -51,15 +51,11 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         self,
         hass: HomeAssistant,
         gtfs_static: GTFSStaticManager,
-        api_key: str | None,
         default_interval: int,
         peak_windows: list[PeakWindow],
     ) -> None:
         self._gtfs = gtfs_static
-        self._api_key = api_key
         self._headers: dict[str, str] = {}
-        if api_key:
-            self._headers["x-api-key"] = api_key
         self._default_interval = default_interval
         self._peak_windows = peak_windows
 
