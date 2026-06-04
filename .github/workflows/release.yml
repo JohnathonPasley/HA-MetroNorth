@@ -1,0 +1,41 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create tag and release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ github.event.inputs.version }}"
+          name: "v${{ github.event.inputs.version }}"
+          body: |
+            ## MTA Metro North v${{ github.event.inputs.version }}
+
+            Home Assistant custom integration for real-time MTA Metro North train data.
+
+            ### Installation via HACS
+            1. Add this repository as a custom HACS repository (Integration type)
+            2. Install **MTA Metro North**
+            3. Restart Home Assistant
+            4. Add via **Settings → Devices & Services → Add Integration**
+
+            ### What's included
+            - Real-time GTFS-RT sensors (next train, upcoming trains per station)
+            - Train vehicle GPS trackers on the HA map
+            - Full stop list per train from static GTFS
+            - Time-based polling (peak/off-peak intervals, fully configurable)
+            - No API key required — MTA feeds are open
+          generate_release_notes: false
