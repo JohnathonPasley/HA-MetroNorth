@@ -40,8 +40,8 @@ class PeakWindow:
 
 
 def _parse_time(s: str) -> time:
-    h, m = s.split(":")
-    return time(int(h), int(m))
+    parts = s.split(":")
+    return time(int(parts[0]), int(parts[1]))
 
 
 class MetroNorthCoordinator(DataUpdateCoordinator):
