@@ -2,17 +2,35 @@
 
 DOMAIN = "metro_north"
 
+# Config entry keys
 CONF_API_KEY = "api_key"
 CONF_STATIONS = "stations"
-CONF_UPDATE_INTERVAL = "update_interval"
+CONF_DEFAULT_INTERVAL = "default_interval"
+CONF_PEAK_1_START = "peak_1_start"
+CONF_PEAK_1_END = "peak_1_end"
+CONF_PEAK_1_INTERVAL = "peak_1_interval"
+CONF_PEAK_2_START = "peak_2_start"
+CONF_PEAK_2_END = "peak_2_end"
+CONF_PEAK_2_INTERVAL = "peak_2_interval"
 
-DEFAULT_UPDATE_INTERVAL = 30  # seconds
-MIN_UPDATE_INTERVAL = 15
-MAX_UPDATE_INTERVAL = 300
+# Interval bounds (seconds)
+MIN_INTERVAL = 15
+MAX_INTERVAL = 600
+DEFAULT_PEAK_INTERVAL = 30
+DEFAULT_OFF_PEAK_INTERVAL = 120
 
+# Peak window defaults
+DEFAULT_PEAK_1_START = "07:00"
+DEFAULT_PEAK_1_END = "09:00"
+DEFAULT_PEAK_2_START = "17:00"
+DEFAULT_PEAK_2_END = "20:00"
+
+# Feed URLs
 GTFS_RT_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr"
 GTFS_RT_VEHICLES_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr-vehicles"
+GTFS_STATIC_URL = "https://rrgtfsfeeds.s3.amazonaws.com/gtfsmnr.zip"
 
+# Sensor / tracker attribute names
 ATTR_TRAIN_NUMBER = "train_number"
 ATTR_TRACK = "track"
 ATTR_SCHEDULED_TIME = "scheduled_time"
@@ -29,7 +47,18 @@ ATTR_VEHICLE_ID = "vehicle_id"
 ATTR_SPEED = "speed"
 ATTR_BEARING = "bearing"
 ATTR_OCCUPANCY = "occupancy"
+ATTR_TRIP_STOPS = "trip_stops"
+ATTR_HEADSIGN = "headsign"
 
+# Train status labels
+TRAIN_STATUS_ON_TIME = "On Time"
+TRAIN_STATUS_DELAYED = "Delayed"
+TRAIN_STATUS_CANCELLED = "Cancelled"
+TRAIN_STATUS_BOARDING = "Boarding"
+TRAIN_STATUS_DEPARTED = "Departed"
+TRAIN_STATUS_SCHEDULED = "Scheduled"
+
+# Harlem Line fallback stop list (stop_id → name) used before GTFS loads
 HARLEM_LINE_STATIONS = {
     "1": "Grand Central Terminal",
     "2": "Harlem-125th Street",
@@ -67,12 +96,4 @@ HARLEM_LINE_STATIONS = {
     "34": "Wassaic",
 }
 
-# Reverse lookup: name -> stop_id
 STATION_NAME_TO_ID = {v: k for k, v in HARLEM_LINE_STATIONS.items()}
-
-TRAIN_STATUS_ON_TIME = "On Time"
-TRAIN_STATUS_DELAYED = "Delayed"
-TRAIN_STATUS_CANCELLED = "Cancelled"
-TRAIN_STATUS_BOARDING = "Boarding"
-TRAIN_STATUS_DEPARTED = "Departed"
-TRAIN_STATUS_SCHEDULED = "Scheduled"
