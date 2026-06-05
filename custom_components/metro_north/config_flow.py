@@ -93,7 +93,7 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_STATIONS): selector.SelectSelector(
+                vol.Optional(CONF_STATIONS, default=[]): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=station_options,
                         multiple=True,
@@ -160,7 +160,7 @@ class OptionsFlow(config_entries.OptionsFlow):
 
         schema = vol.Schema(
             {
-                vol.Required(
+                vol.Optional(
                     CONF_STATIONS, default=current_stations
                 ): selector.SelectSelector(
                     selector.SelectSelectorConfig(
