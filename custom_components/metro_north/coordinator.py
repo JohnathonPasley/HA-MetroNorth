@@ -112,7 +112,10 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         response.raise_for_status()
 
         feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(response.content)
+        try:
+            feed.ParseFromString(response.content)
+        except Exception as err:
+            raise UpdateFailed(f"Trip updates feed returned non-protobuf data: {err}") from err
 
         # Build a complete stop_id set — GTFS stops if loaded, else fallback
         known_stops: set[str]
@@ -259,7 +262,15 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             return []
 
         feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(response.content)
+        try:
+            feed.ParseFromString(response.content)
+        except Exception as err:
+            _LOGGER.debug(
+                "Vehicle positions feed returned non-protobuf response (feed may be"
+                " unavailable): %s",
+                err,
+            )
+            return []
 
         vehicles = []
         for entity in feed.entity:
