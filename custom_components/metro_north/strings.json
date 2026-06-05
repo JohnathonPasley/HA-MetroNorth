@@ -3,14 +3,16 @@
     "step": {
       "user": {
         "title": "MTA Metro North — Select Stations",
-        "description": "Station names are loaded from the MTA static GTFS feed. Select one or more stations to monitor.",
+        "description": "Station names are loaded from the MTA static GTFS feed.",
         "data": {
-          "stations": "Stations to monitor"
+          "stations": "Stations to monitor",
+          "direction": "Train direction",
+          "num_trains": "Individual train sensors per station (1–5)"
         }
       },
       "schedule": {
         "title": "MTA Metro North — Poll Schedule",
-        "description": "Set how often to refresh real-time data. Peak windows (e.g. commute hours) poll more frequently; all other times use the default interval.",
+        "description": "Set how often to refresh real-time data. Peak windows poll more frequently.",
         "data": {
           "peak_1_start": "Peak window 1 — start",
           "peak_1_end": "Peak window 1 — end",
@@ -36,6 +38,8 @@
         "title": "Metro North Options",
         "data": {
           "stations": "Stations to monitor",
+          "direction": "Train direction",
+          "num_trains": "Individual train sensors per station (1–5)",
           "peak_1_start": "Peak window 1 — start",
           "peak_1_end": "Peak window 1 — end",
           "peak_1_interval": "Peak window 1 — interval (s)",

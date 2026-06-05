@@ -13,9 +13,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     DOMAIN,
+    FALLBACK_STATIONS,
     GTFS_RT_URL,
     GTFS_RT_VEHICLES_URL,
-    HARLEM_LINE_STATIONS,
 )
 from .gtfs_static import GTFSStaticManager
 
@@ -25,8 +25,6 @@ REQUEST_TIMEOUT = 20
 
 
 class PeakWindow:
-    """A time window with its own poll interval."""
-
     def __init__(self, start: str, end: str, interval: int) -> None:
         self.start = _parse_time(start)
         self.end = _parse_time(end)
@@ -35,7 +33,6 @@ class PeakWindow:
     def is_active(self, now: time) -> bool:
         if self.start <= self.end:
             return self.start <= now <= self.end
-        # Crosses midnight
         return now >= self.start or now <= self.end
 
 
@@ -44,8 +41,16 @@ def _parse_time(s: str) -> time:
     return time(int(parts[0]), int(parts[1]))
 
 
+def _train_status(delay_minutes: int) -> str:
+    if delay_minutes > 1:
+        return f"Delayed {delay_minutes} min"
+    if delay_minutes < -1:
+        return f"Early {abs(delay_minutes)} min"
+    return "On Time"
+
+
 class MetroNorthCoordinator(DataUpdateCoordinator):
-    """Coordinator — fetches GTFS-RT and adjusts poll rate by time of day."""
+    """Coordinator — fetches GTFS-RT, parses trips + vehicles, adjusts poll rate."""
 
     def __init__(
         self,
@@ -67,7 +72,6 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         )
 
     def _get_current_interval(self) -> int:
-        """Return the interval (seconds) appropriate for the current time."""
         now = datetime.now().time()
         for window in self._peak_windows:
             if window.is_active(now):
@@ -75,25 +79,22 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         return self._default_interval
 
     async def _async_refresh(self, **kwargs) -> None:
-        """Update the poll interval before re-scheduling."""
         new_interval = timedelta(seconds=self._get_current_interval())
         if new_interval != self.update_interval:
-            _LOGGER.debug(
-                "Metro North poll interval → %s s", new_interval.total_seconds()
-            )
+            _LOGGER.debug("Metro North poll interval → %s s", new_interval.total_seconds())
             self.update_interval = new_interval
         await super()._async_refresh(**kwargs)
 
     async def _async_update_data(self) -> dict[str, Any]:
-        # Keep static GTFS fresh in the background (non-blocking on failure)
         try:
             await self._gtfs.async_ensure_loaded()
         except Exception as err:
             _LOGGER.warning("Static GTFS refresh failed (non-fatal): %s", err)
 
         try:
-            trip_data = await self.hass.async_add_executor_job(self._fetch_trip_updates)
-            vehicle_data = await self.hass.async_add_executor_job(self._fetch_vehicles)
+            trip_data, vehicle_data = await self.hass.async_add_executor_job(
+                self._fetch_all_rt
+            )
         except requests.RequestException as err:
             raise UpdateFailed(f"Error fetching Metro North data: {err}") from err
 
@@ -103,104 +104,172 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             "last_updated": datetime.now(timezone.utc),
         }
 
-    # ── GTFS-RT trip updates ───────────────────────────────────────────────
+    # ── Combined GTFS-RT fetch ─────────────────────────────────────────────
 
-    def _fetch_trip_updates(self) -> dict[str, list[dict[str, Any]]]:
-        response = requests.get(
-            GTFS_RT_URL, headers=self._headers, timeout=REQUEST_TIMEOUT
-        )
+    def _fetch_all_rt(self) -> tuple[dict[str, list], list[dict]]:
+        """Fetch main feed; parse trip updates AND any vehicle positions in it.
+        Then supplement with the dedicated vehicle feed if available."""
+        response = requests.get(GTFS_RT_URL, headers=self._headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
         feed = gtfs_realtime_pb2.FeedMessage()
         try:
             feed.ParseFromString(response.content)
         except Exception as err:
-            raise UpdateFailed(f"Trip updates feed returned non-protobuf data: {err}") from err
+            raise UpdateFailed(f"Main GTFS-RT feed returned non-protobuf data: {err}") from err
 
-        # Build a complete stop_id set — GTFS stops if loaded, else fallback
-        known_stops: set[str]
-        if self._gtfs.is_loaded():
-            known_stops = set(self._gtfs.get_all_stops().keys())
-        else:
-            known_stops = set(HARLEM_LINE_STATIONS.keys())
-
-        # stop_id → list[train dict]
-        stops: dict[str, list[dict[str, Any]]] = {sid: [] for sid in known_stops}
+        known_stops: set[str] = (
+            set(self._gtfs.get_all_stops().keys())
+            if self._gtfs.is_loaded()
+            else set(FALLBACK_STATIONS.keys())
+        )
+        stops: dict[str, list] = {sid: [] for sid in known_stops}
+        vehicles: dict[str, dict] = {}  # vehicle_id → vehicle dict (dedup)
 
         now_ts = datetime.now(timezone.utc).timestamp()
 
         for entity in feed.entity:
-            if not entity.HasField("trip_update"):
+            if entity.HasField("trip_update"):
+                self._parse_trip_update(entity.trip_update, stops, now_ts)
+            if entity.HasField("vehicle"):
+                v = self._parse_vehicle_entity(entity.vehicle, entity.id)
+                if v:
+                    vehicles[v["vehicle_id"]] = v
+
+        # Sort each stop by estimated departure
+        for sid in stops:
+            stops[sid].sort(key=lambda x: x["estimated_time"])
+
+        # Supplement with dedicated vehicle feed (may fail silently)
+        self._supplement_vehicles(vehicles)
+
+        return stops, list(vehicles.values())
+
+    def _parse_trip_update(
+        self,
+        tu: Any,
+        stops: dict[str, list],
+        now_ts: float,
+    ) -> None:
+        trip_id = tu.trip.trip_id
+        route_id = tu.trip.route_id
+        direction = tu.trip.direction_id
+        static_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
+
+        track = tu.vehicle.label if tu.HasField("vehicle") else ""
+
+        for stu in tu.stop_time_update:
+            stop_id = stu.stop_id
+            if stop_id not in stops:
                 continue
 
-            tu = entity.trip_update
-            trip_id = tu.trip.trip_id
-            route_id = tu.trip.route_id
-            direction = tu.trip.direction_id
+            scheduled_ts: int | None = None
+            delay_seconds = 0
 
-            # Build trip stop list from static GTFS for this trip
-            static_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
+            if stu.HasField("departure") and stu.departure.time:
+                scheduled_ts = stu.departure.time
+                delay_seconds = stu.departure.delay or 0
+            elif stu.HasField("arrival") and stu.arrival.time:
+                scheduled_ts = stu.arrival.time
+                delay_seconds = stu.arrival.delay or 0
 
-            for stu in tu.stop_time_update:
-                stop_id = stu.stop_id
-                if stop_id not in stops:
-                    continue
+            if scheduled_ts is None:
+                continue
 
-                scheduled_ts: int | None = None
-                delay_seconds = 0
+            estimated_ts = scheduled_ts + delay_seconds
+            if estimated_ts < now_ts - 60:
+                continue
 
-                if stu.HasField("departure"):
-                    scheduled_ts = stu.departure.time or None
-                    delay_seconds = stu.departure.delay or 0
-                elif stu.HasField("arrival"):
-                    scheduled_ts = stu.arrival.time or None
-                    delay_seconds = stu.arrival.delay or 0
+            delay_minutes = round(delay_seconds / 60)
 
-                if scheduled_ts is None:
-                    continue
+            stops[stop_id].append(
+                {
+                    "trip_id": trip_id,
+                    "route_id": route_id,
+                    "route_name": self._gtfs.get_route_name(route_id)
+                    if self._gtfs.is_loaded()
+                    else route_id,
+                    "direction": direction,
+                    "headsign": self._get_headsign(trip_id),
+                    "scheduled_time": datetime.fromtimestamp(
+                        scheduled_ts, tz=timezone.utc
+                    ).isoformat(),
+                    "estimated_time": datetime.fromtimestamp(
+                        estimated_ts, tz=timezone.utc
+                    ).isoformat(),
+                    "delay_minutes": delay_minutes,
+                    "status": _train_status(delay_minutes),
+                    "track": track,
+                    "stop_sequence": stu.stop_sequence,
+                    "destination": self._resolve_terminus(tu, static_stops, last=True),
+                    "origin": self._resolve_terminus(tu, static_stops, last=False),
+                    "trip_stops": self._build_upcoming_stops(static_stops, stu.stop_sequence),
+                }
+            )
 
-                estimated_ts = scheduled_ts + delay_seconds
-                if estimated_ts < now_ts - 60:
-                    continue  # already departed
+    def _parse_vehicle_entity(self, vp: Any, entity_id: str) -> dict | None:
+        try:
+            lat = vp.position.latitude
+            lon = vp.position.longitude
+        except Exception:
+            return None
+        if lat == 0.0 and lon == 0.0:
+            return None
 
-                # Best-effort track number from vehicle label
-                track = ""
-                if tu.HasField("vehicle"):
-                    track = tu.vehicle.label or ""
+        trip_id = vp.trip.trip_id if vp.HasField("trip") else ""
+        route_id = vp.trip.route_id if vp.HasField("trip") else ""
+        current_stop_id = vp.stop_id or ""
+        current_stop_name = (
+            self._gtfs.get_stop_name(current_stop_id)
+            if self._gtfs.is_loaded()
+            else FALLBACK_STATIONS.get(current_stop_id, current_stop_id)
+        )
+        raw_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
+        trip_stops = [
+            {
+                "stop_sequence": s.stop_sequence,
+                "stop_name": s.stop_name,
+                "arrival": s.arrival_time,
+                "departure": s.departure_time,
+            }
+            for s in raw_stops
+        ]
+        return {
+            "vehicle_id": vp.vehicle.id or entity_id,
+            "label": vp.vehicle.label or vp.vehicle.id or entity_id,
+            "trip_id": trip_id,
+            "route_id": route_id,
+            "route_name": self._gtfs.get_route_name(route_id) if self._gtfs.is_loaded() else route_id,
+            "headsign": self._get_headsign(trip_id),
+            "latitude": lat,
+            "longitude": lon,
+            "bearing": vp.position.bearing,
+            "speed": round(vp.position.speed * 2.237, 1) if vp.position.speed else 0,
+            "current_stop_id": current_stop_id,
+            "current_stop_name": current_stop_name,
+            "current_stop_sequence": vp.current_stop_sequence,
+            "timestamp": vp.timestamp,
+            "trip_stops": trip_stops,
+        }
 
-                delay_minutes = round(delay_seconds / 60)
+    def _supplement_vehicles(self, vehicles: dict[str, dict]) -> None:
+        """Try the dedicated vehicle feed and merge any new positions found."""
+        try:
+            resp = requests.get(
+                GTFS_RT_VEHICLES_URL, headers=self._headers, timeout=REQUEST_TIMEOUT
+            )
+            resp.raise_for_status()
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(resp.content)
+            for entity in feed.entity:
+                if entity.HasField("vehicle"):
+                    v = self._parse_vehicle_entity(entity.vehicle, entity.id)
+                    if v and v["vehicle_id"] not in vehicles:
+                        vehicles[v["vehicle_id"]] = v
+        except Exception as err:
+            _LOGGER.debug("Dedicated vehicle feed unavailable: %s", err)
 
-                # Upcoming stops from static schedule (stops after this one)
-                upcoming_stops = self._build_upcoming_stops(static_stops, stu.stop_sequence)
-
-                stops[stop_id].append(
-                    {
-                        "trip_id": trip_id,
-                        "route_id": route_id,
-                        "route_name": self._gtfs.get_route_name(route_id)
-                        if self._gtfs.is_loaded()
-                        else route_id,
-                        "direction": direction,
-                        "headsign": self._get_headsign(trip_id),
-                        "scheduled_time": datetime.fromtimestamp(
-                            scheduled_ts, tz=timezone.utc
-                        ).isoformat(),
-                        "estimated_time": datetime.fromtimestamp(
-                            estimated_ts, tz=timezone.utc
-                        ).isoformat(),
-                        "delay_minutes": delay_minutes,
-                        "track": track,
-                        "stop_sequence": stu.stop_sequence,
-                        "destination": self._resolve_terminus(tu, static_stops, last=True),
-                        "origin": self._resolve_terminus(tu, static_stops, last=False),
-                        "trip_stops": upcoming_stops,
-                    }
-                )
-
-        for stop_id in stops:
-            stops[stop_id].sort(key=lambda x: x["estimated_time"])
-
-        return stops
+    # ── Helpers ────────────────────────────────────────────────────────────
 
     def _get_headsign(self, trip_id: str) -> str:
         if not self._gtfs.is_loaded():
@@ -209,116 +278,25 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         return info.headsign if info else ""
 
     @staticmethod
-    def _build_upcoming_stops(
-        static_stops: list, current_sequence: int
-    ) -> list[dict[str, Any]]:
-        """All static stops at or after the current stop sequence."""
-        result = []
-        for s in static_stops:
-            if s.stop_sequence >= current_sequence:
-                result.append(
-                    {
-                        "stop_sequence": s.stop_sequence,
-                        "stop_id": s.stop_id,
-                        "stop_name": s.stop_name,
-                        "arrival_time": s.arrival_time,
-                        "departure_time": s.departure_time,
-                    }
-                )
-        return result
+    def _build_upcoming_stops(static_stops: list, current_sequence: int) -> list[dict]:
+        return [
+            {
+                "stop_sequence": s.stop_sequence,
+                "stop_name": s.stop_name,
+                "arrival": s.arrival_time,
+                "departure": s.departure_time,
+            }
+            for s in static_stops
+            if s.stop_sequence >= current_sequence
+        ]
 
-    def _resolve_terminus(
-        self,
-        trip_update: Any,
-        static_stops: list,
-        last: bool,
-    ) -> str:
-        """Resolve origin or destination from static stops, then fallback to RT data."""
+    def _resolve_terminus(self, trip_update: Any, static_stops: list, last: bool) -> str:
         if static_stops:
-            stop = static_stops[-1] if last else static_stops[0]
-            return stop.stop_name
-
-        rt_stops = list(trip_update.stop_time_update)
-        if not rt_stops:
+            return (static_stops[-1] if last else static_stops[0]).stop_name
+        rt = list(trip_update.stop_time_update)
+        if not rt:
             return "Unknown"
-        stop_id = rt_stops[-1].stop_id if last else rt_stops[0].stop_id
+        stop_id = rt[-1].stop_id if last else rt[0].stop_id
         if self._gtfs.is_loaded():
             return self._gtfs.get_stop_name(stop_id)
-        return HARLEM_LINE_STATIONS.get(stop_id, stop_id)
-
-    # ── GTFS-RT vehicle positions ──────────────────────────────────────────
-
-    def _fetch_vehicles(self) -> list[dict[str, Any]]:
-        try:
-            response = requests.get(
-                GTFS_RT_VEHICLES_URL, headers=self._headers, timeout=REQUEST_TIMEOUT
-            )
-            response.raise_for_status()
-        except requests.HTTPError as err:
-            _LOGGER.debug("Vehicle positions feed returned %s, skipping", err)
-            return []
-        except requests.RequestException as err:
-            _LOGGER.debug("Vehicle positions unavailable: %s", err)
-            return []
-
-        feed = gtfs_realtime_pb2.FeedMessage()
-        try:
-            feed.ParseFromString(response.content)
-        except Exception as err:
-            _LOGGER.debug(
-                "Vehicle positions feed returned non-protobuf response (feed may be"
-                " unavailable): %s",
-                err,
-            )
-            return []
-
-        vehicles = []
-        for entity in feed.entity:
-            if not entity.HasField("vehicle"):
-                continue
-            vp = entity.vehicle
-
-            try:
-                lat = vp.position.latitude
-                lon = vp.position.longitude
-            except Exception:
-                continue
-
-            if lat == 0.0 and lon == 0.0:
-                continue
-
-            current_stop_id = vp.stop_id if vp.stop_id else ""
-            current_stop_name = (
-                self._gtfs.get_stop_name(current_stop_id)
-                if self._gtfs.is_loaded()
-                else HARLEM_LINE_STATIONS.get(current_stop_id, current_stop_id)
-            )
-
-            trip_id = vp.trip.trip_id if vp.HasField("trip") else ""
-            route_id = vp.trip.route_id if vp.HasField("trip") else ""
-
-            vehicles.append(
-                {
-                    "vehicle_id": vp.vehicle.id or entity.id,
-                    "label": vp.vehicle.label or vp.vehicle.id or entity.id,
-                    "trip_id": trip_id,
-                    "route_id": route_id,
-                    "route_name": self._gtfs.get_route_name(route_id)
-                    if self._gtfs.is_loaded()
-                    else route_id,
-                    "headsign": self._get_headsign(trip_id),
-                    "latitude": lat,
-                    "longitude": lon,
-                    "bearing": vp.position.bearing,
-                    "speed": round(vp.position.speed * 2.237, 1) if vp.position.speed else 0,
-                    "current_stop_id": current_stop_id,
-                    "current_stop_name": current_stop_name,
-                    "current_stop_sequence": vp.current_stop_sequence,
-                    "timestamp": vp.timestamp,
-                    "trip_stops": self._gtfs.get_trip_stops(trip_id)
-                    if self._gtfs.is_loaded()
-                    else [],
-                }
-            )
-
-        return vehicles
+        return FALLBACK_STATIONS.get(stop_id, stop_id)

@@ -4,6 +4,15 @@ DOMAIN = "metro_north"
 
 # Config entry keys
 CONF_STATIONS = "stations"
+CONF_DIRECTION = "direction"
+CONF_NUM_TRAINS = "num_trains"
+
+# Direction options
+DIRECTION_BOTH = "both"
+DIRECTION_INBOUND = "inbound"    # direction_id == 0, toward Grand Central
+DIRECTION_OUTBOUND = "outbound"  # direction_id == 1, away from Grand Central
+
+DEFAULT_NUM_TRAINS = 5
 CONF_DEFAULT_INTERVAL = "default_interval"
 CONF_PEAK_1_START = "peak_1_start"
 CONF_PEAK_1_END = "peak_1_end"
