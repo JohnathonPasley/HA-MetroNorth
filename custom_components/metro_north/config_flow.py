@@ -16,9 +16,11 @@ from .const import (
     CONF_DEFAULT_INTERVAL,
     CONF_DIRECTION,
     CONF_NUM_TRAINS,
+    CONF_PEAK_1_DAYS,
     CONF_PEAK_1_END,
     CONF_PEAK_1_INTERVAL,
     CONF_PEAK_1_START,
+    CONF_PEAK_2_DAYS,
     CONF_PEAK_2_END,
     CONF_PEAK_2_INTERVAL,
     CONF_PEAK_2_START,
@@ -29,6 +31,7 @@ from .const import (
     DEFAULT_PEAK_1_START,
     DEFAULT_PEAK_2_END,
     DEFAULT_PEAK_2_START,
+    DEFAULT_PEAK_DAYS,
     DEFAULT_PEAK_INTERVAL,
     DIRECTION_BOTH,
     DIRECTION_INBOUND,
@@ -47,6 +50,16 @@ _DIRECTION_OPTIONS = [
     {"value": DIRECTION_BOTH, "label": "Both directions"},
     {"value": DIRECTION_INBOUND, "label": "Inbound only (toward Grand Central)"},
     {"value": DIRECTION_OUTBOUND, "label": "Outbound only (from Grand Central)"},
+]
+
+_DAY_OPTIONS = [
+    {"value": "0", "label": "Monday"},
+    {"value": "1", "label": "Tuesday"},
+    {"value": "2", "label": "Wednesday"},
+    {"value": "3", "label": "Thursday"},
+    {"value": "4", "label": "Friday"},
+    {"value": "5", "label": "Saturday"},
+    {"value": "6", "label": "Sunday"},
 ]
 
 
@@ -217,6 +230,13 @@ class OptionsFlow(config_entries.OptionsFlow):
 def _schedule_fields(d: dict[str, Any]) -> dict:
     return {
         vol.Optional(
+            CONF_PEAK_1_DAYS, default=d.get(CONF_PEAK_1_DAYS, DEFAULT_PEAK_DAYS)
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=_DAY_OPTIONS, multiple=True, mode=selector.SelectSelectorMode.LIST
+            )
+        ),
+        vol.Optional(
             CONF_PEAK_1_START, default=d.get(CONF_PEAK_1_START, DEFAULT_PEAK_1_START)
         ): selector.TimeSelector(),
         vol.Optional(
@@ -228,6 +248,13 @@ def _schedule_fields(d: dict[str, Any]) -> dict:
         ): selector.NumberSelector(
             selector.NumberSelectorConfig(
                 min=MIN_INTERVAL, max=MAX_INTERVAL, step=5, unit_of_measurement="s"
+            )
+        ),
+        vol.Optional(
+            CONF_PEAK_2_DAYS, default=d.get(CONF_PEAK_2_DAYS, DEFAULT_PEAK_DAYS)
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=_DAY_OPTIONS, multiple=True, mode=selector.SelectSelectorMode.LIST
             )
         ),
         vol.Optional(

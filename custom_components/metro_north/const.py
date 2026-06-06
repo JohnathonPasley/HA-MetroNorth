@@ -21,6 +21,10 @@ CONF_PEAK_1_INTERVAL = "peak_1_interval"
 CONF_PEAK_2_START = "peak_2_start"
 CONF_PEAK_2_END = "peak_2_end"
 CONF_PEAK_2_INTERVAL = "peak_2_interval"
+CONF_PEAK_1_DAYS = "peak_1_days"
+CONF_PEAK_2_DAYS = "peak_2_days"
+
+DEFAULT_PEAK_DAYS = ["0", "1", "2", "3", "4"]  # Mon–Fri (stored as strings for SelectSelector)
 
 # Interval bounds (seconds)
 MIN_INTERVAL = 15

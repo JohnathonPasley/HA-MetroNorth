@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -125,6 +126,7 @@ class GTFSStaticManager:
                             except (KeyError, ValueError):
                                 pass
 
+                active_stop_ids: set[str] = set()
                 if "stop_times.txt" in names:
                     with zf.open("stop_times.txt") as f:
                         reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
@@ -133,6 +135,7 @@ class GTFSStaticManager:
                             if not trip_id:
                                 continue
                             stop_id = row.get("stop_id", "")
+                            active_stop_ids.add(stop_id)
                             stop_info = data.stops.get(stop_id)
                             stop_name = stop_info.name if stop_info else stop_id
                             entry = StopTimeInfo(
@@ -148,6 +151,10 @@ class GTFSStaticManager:
 
                     for tid in data.stop_times:
                         data.stop_times[tid].sort(key=lambda x: x.stop_sequence)
+
+                # Only expose stops that have scheduled service in this feed
+                if active_stop_ids:
+                    data.stops = {k: v for k, v in data.stops.items() if k in active_stop_ids}
 
         except Exception as err:
             _LOGGER.error("Error parsing static GTFS ZIP: %s", err)
@@ -181,9 +188,21 @@ class GTFSStaticManager:
         return self.data.trips.get(trip_id)
 
     def get_trip_short_name(self, trip_id: str) -> str:
-        """Return the human-readable train number (trip_short_name), e.g. '509'."""
+        """Return the human-readable train number for display (e.g. '509').
+
+        Uses trip_short_name when it looks like a real train number (2–5 digits).
+        Otherwise falls back to extracting a 3–4 digit number from trip_id,
+        which is where Metro North embeds the schedule number.
+        """
         info = self.data.trips.get(trip_id)
-        return info.short_name if info else ""
+        short = info.short_name if info else ""
+        if short and re.fullmatch(r"\d{2,5}", short):
+            return short
+        # Try to pull a 3–4 digit standalone number from the trip_id
+        m = re.search(r"(?<!\d)(\d{3,4})(?!\d)", trip_id)
+        if m:
+            return m.group(1)
+        return short
 
     def get_route_name(self, route_id: str) -> str:
         return self.data.routes.get(route_id, route_id)
