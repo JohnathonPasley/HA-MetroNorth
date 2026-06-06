@@ -67,12 +67,15 @@ def _sanitize(s: str, max_len: int) -> str:
 
 
 class PeakWindow:
-    def __init__(self, start: str, end: str, interval: int) -> None:
+    def __init__(self, start: str, end: str, interval: int, days: set[int] | None = None) -> None:
         self.start = _parse_time(start)
         self.end = _parse_time(end)
         self.interval = interval
+        self.days: set[int] = days if days is not None else set()  # empty = every day
 
     def is_active(self, now: time) -> bool:
+        if self.days and datetime.now().weekday() not in self.days:
+            return False
         if self.start <= self.end:
             return self.start <= now <= self.end
         return now >= self.start or now <= self.end
@@ -209,9 +212,15 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
     ) -> None:
         trip_id = tu.trip.trip_id
         route_id = tu.trip.route_id
-        direction = tu.trip.direction_id
         static_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
         vehicle_label = tu.vehicle.label if tu.HasField("vehicle") else ""
+
+        # Prefer static GTFS direction_id — the RT field defaults to 0 when unset
+        if self._gtfs.is_loaded():
+            trip_info = self._gtfs.get_trip_info(trip_id)
+            direction = trip_info.direction_id if trip_info else tu.trip.direction_id
+        else:
+            direction = tu.trip.direction_id
 
         for stu in tu.stop_time_update:
             stop_id = stu.stop_id
@@ -269,7 +278,11 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "stop_sequence": stu.stop_sequence,
                     "destination": self._resolve_terminus(tu, static_stops, last=True),
                     "origin": self._resolve_terminus(tu, static_stops, last=False),
-                    "trip_stops": self._build_upcoming_stops(static_stops, stu.stop_sequence),
+                    "trip_stops": (
+                        self._build_upcoming_stops(static_stops, stu.stop_sequence)
+                        if static_stops
+                        else self._build_rt_stops(tu.stop_time_update, stu.stop_sequence)
+                    ),
                 }
             )
 
@@ -483,6 +496,27 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             for s in static_stops
             if s.stop_sequence >= current_sequence
         ]
+
+    def _build_rt_stops(self, stop_time_updates: Any, from_sequence: int) -> list[dict]:
+        """Build trip stops from RT stop_time_update when static GTFS has no match."""
+        result = []
+        for stu in stop_time_updates:
+            if stu.stop_sequence < from_sequence:
+                continue
+            stop_name = (
+                self._gtfs.get_stop_name(stu.stop_id)
+                if self._gtfs.is_loaded()
+                else FALLBACK_STATIONS.get(stu.stop_id, stu.stop_id)
+            )
+            arr_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else None
+            dep_ts = stu.departure.time if stu.HasField("departure") and stu.departure.time else None
+            result.append({
+                "stop_sequence": stu.stop_sequence,
+                "stop_name": stop_name,
+                "arrival": datetime.fromtimestamp(arr_ts, tz=timezone.utc).isoformat() if arr_ts else "",
+                "departure": datetime.fromtimestamp(dep_ts, tz=timezone.utc).isoformat() if dep_ts else "",
+            })
+        return result
 
     def _resolve_terminus(self, trip_update: Any, static_stops: list, last: bool) -> str:
         if static_stops:

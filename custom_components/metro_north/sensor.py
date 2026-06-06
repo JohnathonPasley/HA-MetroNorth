@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -62,17 +63,29 @@ async def async_setup_entry(
     num_trains = max(1, min(20, int(config.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))))
 
     entities: list[SensorEntity] = []
+    expected_unique_ids: set[str] = set()
+
     for station_name in selected:
         stop_id = _resolve_stop_id(coordinator, station_name)
         if stop_id is None:
             _LOGGER.warning("Cannot resolve stop ID for station: %s", station_name)
             continue
         for position in range(1, num_trains + 1):
+            uid = f"{DOMAIN}_train_{position}_{stop_id}"
+            expected_unique_ids.add(uid)
             entities.append(
                 TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction)
             )
+        expected_unique_ids.add(f"{DOMAIN}_upcoming_{stop_id}")
+        expected_unique_ids.add(f"{DOMAIN}_alerts_{stop_id}")
         entities.append(UpcomingTrainsSensor(coordinator, stop_id, station_name, direction))
         entities.append(ServiceAlertSensor(coordinator, stop_id, station_name))
+
+    # Remove stale entities that no longer match the current config
+    registry = er.async_get(hass)
+    for entity_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity_entry.unique_id not in expected_unique_ids:
+            registry.async_remove(entity_entry.entity_id)
 
     async_add_entities(entities)
 
