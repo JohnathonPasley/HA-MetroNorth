@@ -25,6 +25,35 @@ _LOGGER = logging.getLogger(__name__)
 _MTA_EXT_FIELD = 1005  # extension field number on both StopTimeUpdate and CarriageDetails
 
 
+def diagnose_stop_time_update(stu: object) -> dict:
+    """Return diagnostic info about MTARR extension presence on a StopTimeUpdate.
+
+    Useful for debugging missing track/status: shows whether field 1005 is in
+    the feed at all, what other unknown extension fields are present, and the
+    parsed values if the extension was found.
+    """
+    result: dict = {
+        "mtarr_extension_present": False,
+        "unknown_field_numbers": [],
+        "track": "",
+        "train_status": "",
+    }
+    try:
+        ufs = list(stu.UnknownFields())
+        result["unknown_field_numbers"] = [uf.field_number for uf in ufs]
+        for uf in ufs:
+            if uf.field_number == _MTA_EXT_FIELD:
+                result["mtarr_extension_present"] = True
+                raw = uf.data
+                if isinstance(raw, (bytes, bytearray, memoryview)):
+                    track, status = _parse_track_and_status(bytes(raw))
+                    result["track"] = track
+                    result["train_status"] = status
+    except Exception as err:
+        result["error"] = str(err)
+    return result
+
+
 def extract_stop_time_update_ext(stu: object) -> tuple[str, str]:
     """Return (track, trainStatus) from MtaRailroadStopTimeUpdate on a StopTimeUpdate.
 
