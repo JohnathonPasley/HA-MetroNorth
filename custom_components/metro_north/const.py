@@ -58,6 +58,7 @@ ATTR_BEARING = "bearing"
 ATTR_OCCUPANCY = "occupancy"
 ATTR_TRIP_STOPS = "trip_stops"
 ATTR_HEADSIGN = "headsign"
+ATTR_SERVICE_ALERTS = "service_alerts"
 
 # Train status labels
 TRAIN_STATUS_ON_TIME = "On Time"

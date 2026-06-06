@@ -19,12 +19,46 @@ from .const import (
 )
 from .gtfs_static import GTFSStaticManager
 from .mta_extensions import extract_stop_time_update_ext
+from .mta_mercury import extract_mercury_alert, extract_mercury_entity_selector, get_translated_text
 
 _LOGGER = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 20
 _MAX_TRACK_LEN = 16
 _MAX_STATUS_LEN = 64
+
+# GTFS-RT Alert cause/effect enum → display string
+_ALERT_CAUSE = {
+    1: "Unknown Cause",
+    2: "Other Cause",
+    3: "Technical Problem",
+    4: "Strike",
+    5: "Demonstration",
+    6: "Accident",
+    7: "Holiday",
+    8: "Weather",
+    9: "Maintenance",
+    10: "Construction",
+    11: "Police Activity",
+    12: "Medical Emergency",
+}
+_ALERT_EFFECT = {
+    1: "No Service",
+    2: "Reduced Service",
+    3: "Significant Delays",
+    4: "Detour",
+    5: "Additional Service",
+    6: "Modified Service",
+    7: "Other Effect",
+    8: "Unknown Effect",
+    9: "Stop Moved",
+    10: "No Effect",
+    11: "Accessibility Issue",
+}
+
+
+def _alert_enum_name(val: int, mapping: dict) -> str:
+    return mapping.get(val, "")
 
 
 def _sanitize(s: str, max_len: int) -> str:
@@ -100,7 +134,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Static GTFS refresh failed (non-fatal): %s", err)
 
         try:
-            trip_data, vehicle_data = await self.hass.async_add_executor_job(
+            trip_data, vehicle_data, alert_data = await self.hass.async_add_executor_job(
                 self._fetch_all_rt
             )
         except requests.RequestException as err:
@@ -109,13 +143,14 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         return {
             "trip_updates": trip_data,
             "vehicles": vehicle_data,
+            "service_alerts": alert_data,
             "last_updated": datetime.now(timezone.utc),
         }
 
     # ── Combined GTFS-RT fetch ─────────────────────────────────────────────
 
-    def _fetch_all_rt(self) -> tuple[dict[str, list], list[dict]]:
-        """Fetch main feed; parse trip updates AND any vehicle positions in it.
+    def _fetch_all_rt(self) -> tuple[dict[str, list], list[dict], dict[str, list]]:
+        """Fetch main feed; parse trip updates, vehicle positions, and service alerts.
         Then supplement with the dedicated vehicle feed if available."""
         response = requests.get(GTFS_RT_URL, headers=self._headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
@@ -133,6 +168,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         )
         stops: dict[str, list] = {sid: [] for sid in known_stops}
         vehicles: dict[str, dict] = {}  # vehicle_id → vehicle dict (dedup)
+        alerts: dict[str, list] = {}   # stop_id or route_id → [alert_dict, ...]
 
         now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -143,6 +179,8 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 v = self._parse_vehicle_entity(entity.vehicle, entity.id)
                 if v:
                     vehicles[v["vehicle_id"]] = v
+            if entity.HasField("alert"):
+                self._parse_alert(entity.alert, alerts, now_ts)
 
         # Sort each stop by estimated departure
         for sid in stops:
@@ -161,7 +199,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     if v and v["vehicle_id"] not in vehicles:
                         vehicles[v["vehicle_id"]] = v
 
-        return stops, list(vehicles.values())
+        return stops, list(vehicles.values()), alerts
 
     def _parse_trip_update(
         self,
@@ -274,6 +312,63 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             "timestamp": vp.timestamp,
             "trip_stops": trip_stops,
         }
+
+    def _parse_alert(
+        self,
+        alert: Any,
+        alerts: dict[str, list],
+        now_ts: float,
+    ) -> None:
+        """Parse a GTFS-RT Alert entity and index it by affected stop_id and route_id."""
+        # Check active period — skip alerts that are wholly in the past
+        active = True
+        for period in alert.active_period:
+            end = period.end
+            if end and end < now_ts - 300:
+                active = False
+                break
+        if not active:
+            return
+
+        header = get_translated_text(alert.header_text)
+        description = get_translated_text(alert.description_text)
+
+        # CAUSE / EFFECT enums → human-readable strings
+        cause = _alert_enum_name(alert.cause, _ALERT_CAUSE)
+        effect = _alert_enum_name(alert.effect, _ALERT_EFFECT)
+
+        # Mercury extension
+        mercury = extract_mercury_alert(alert)
+        alert_type = mercury.get("alert_type", "")
+        human_period = mercury.get("human_readable_active_period", "")
+
+        alert_dict = {
+            "header": header,
+            "description": description,
+            "cause": cause,
+            "effect": effect,
+            "alert_type": alert_type,
+            "active_period": human_period,
+        }
+
+        # Index by each informed entity's stop_id and/or route_id
+        for ie in alert.informed_entity:
+            mercury_sel = extract_mercury_entity_selector(ie)
+            sort_order = mercury_sel.get("sort_order", "")
+
+            keys: list[str] = []
+            if ie.stop_id:
+                keys.append(ie.stop_id)
+            if ie.route_id:
+                keys.append(f"route:{ie.route_id}")
+
+            for key in keys:
+                if key not in alerts:
+                    alerts[key] = []
+                entry = {**alert_dict}
+                if sort_order:
+                    entry["priority"] = sort_order
+                alerts[key].append(entry)
 
     def _synthesize_vehicle(self, tu: Any, now_ts: float) -> dict | None:
         """Build an approximate vehicle from TripUpdate + static GTFS stop coordinates.

@@ -20,6 +20,7 @@ from .const import (
     ATTR_LINE,
     ATTR_ORIGIN,
     ATTR_SCHEDULED_TIME,
+    ATTR_SERVICE_ALERTS,
     ATTR_TRACK,
     ATTR_TRAIN_NUMBER,
     ATTR_TRIP_STOPS,
@@ -71,6 +72,7 @@ async def async_setup_entry(
                 TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction)
             )
         entities.append(UpcomingTrainsSensor(coordinator, stop_id, station_name, direction))
+        entities.append(ServiceAlertSensor(coordinator, stop_id, station_name))
 
     async_add_entities(entities)
 
@@ -219,6 +221,34 @@ class UpcomingTrainsSensor(_StationBase, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         trains = _filtered_trains(self._get_trains(), self._direction)[:MAX_UPCOMING]
         return {ATTR_UPCOMING_TRAINS: [_train_attrs(t) for t in trains]}
+
+
+class ServiceAlertSensor(_StationBase, SensorEntity):
+    """Active service alert count + details for a station."""
+
+    def __init__(
+        self,
+        coordinator: MetroNorthCoordinator,
+        stop_id: str,
+        station_name: str,
+    ) -> None:
+        super().__init__(coordinator, stop_id, station_name)
+        self._attr_unique_id = f"{DOMAIN}_alerts_{stop_id}"
+        self._attr_name = "Service Alerts"
+        self._attr_icon = "mdi:alert-circle-outline"
+
+    def _get_alerts(self) -> list[dict]:
+        if self.coordinator.data is None:
+            return []
+        return self.coordinator.data.get("service_alerts", {}).get(self._stop_id, [])
+
+    @property
+    def native_value(self) -> int:
+        return len(self._get_alerts())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {ATTR_SERVICE_ALERTS: self._get_alerts()}
 
 
 def _fmt_time(iso: str | None) -> str | None:
