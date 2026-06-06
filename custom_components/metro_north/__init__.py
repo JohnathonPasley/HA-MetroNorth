@@ -75,6 +75,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # Register manual GTFS refresh service (once; safe to call on every entry load)
+    if not hass.services.has_service(DOMAIN, "update_gtfs"):
+        async def _handle_update_gtfs(call) -> None:  # type: ignore[type-arg]
+            """Force-download fresh GTFS static data and reload all entries."""
+            for eid, coord in list(hass.data.get(DOMAIN, {}).items()):
+                if isinstance(coord, MetroNorthCoordinator):
+                    await coord._gtfs.async_force_refresh()
+                    await hass.config_entries.async_reload(eid)
+
+        hass.services.async_register(DOMAIN, "update_gtfs", _handle_update_gtfs)
+
     return True
 
 

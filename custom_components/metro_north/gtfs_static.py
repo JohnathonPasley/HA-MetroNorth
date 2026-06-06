@@ -18,6 +18,10 @@ GTFS_STATIC_URL = "https://rrgtfsfeeds.s3.amazonaws.com/gtfsmnr.zip"
 REFRESH_INTERVAL = timedelta(hours=24)
 REQUEST_TIMEOUT = 60
 
+# Column names to probe for track/platform info in stop_times.txt / stops.txt
+_TRACK_COLS_STOP_TIMES = ("track", "arrival_platform", "departure_platform", "platform")
+_TRACK_COLS_STOPS = ("platform_code", "stop_code", "track")
+
 
 @dataclass
 class StopInfo:
@@ -25,6 +29,7 @@ class StopInfo:
     name: str
     lat: float
     lon: float
+    platform_code: str = ""  # from platform_code / stop_code in stops.txt
 
 
 @dataclass
@@ -34,6 +39,7 @@ class StopTimeInfo:
     stop_name: str
     arrival_time: str
     departure_time: str
+    track: str = ""  # from track / platform column in stop_times.txt (non-standard)
 
 
 @dataclass
@@ -43,6 +49,10 @@ class TripInfo:
     headsign: str
     direction_id: int
     short_name: str = ""  # trip_short_name → human-readable train number, e.g. "509"
+
+    @property
+    def direction_text(self) -> str:
+        return "Inbound" if self.direction_id == 1 else "Outbound"
 
 
 class GTFSStaticData:
@@ -90,6 +100,8 @@ class GTFSStaticManager:
                 if "stops.txt" in names:
                     with zf.open("stops.txt") as f:
                         reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+                        fieldnames = reader.fieldnames or []
+                        plat_col = next((c for c in _TRACK_COLS_STOPS if c in fieldnames), None)
                         for row in reader:
                             try:
                                 data.stops[row["stop_id"]] = StopInfo(
@@ -97,6 +109,7 @@ class GTFSStaticManager:
                                     name=row["stop_name"].strip(),
                                     lat=float(row.get("stop_lat") or 0),
                                     lon=float(row.get("stop_lon") or 0),
+                                    platform_code=row.get(plat_col, "").strip() if plat_col else "",
                                 )
                             except (KeyError, ValueError):
                                 pass
@@ -130,6 +143,8 @@ class GTFSStaticManager:
                 if "stop_times.txt" in names:
                     with zf.open("stop_times.txt") as f:
                         reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+                        fieldnames = reader.fieldnames or []
+                        track_col = next((c for c in _TRACK_COLS_STOP_TIMES if c in fieldnames), None)
                         for row in reader:
                             trip_id = row.get("trip_id")
                             if not trip_id:
@@ -144,6 +159,7 @@ class GTFSStaticManager:
                                 stop_name=stop_name,
                                 arrival_time=row.get("arrival_time", ""),
                                 departure_time=row.get("departure_time", ""),
+                                track=row.get(track_col, "").strip() if track_col else "",
                             )
                             if trip_id not in data.stop_times:
                                 data.stop_times[trip_id] = []
@@ -174,6 +190,9 @@ class GTFSStaticManager:
     def is_loaded(self) -> bool:
         return self.data.last_updated is not None
 
+    def last_updated_iso(self) -> str:
+        return self.data.last_updated.isoformat() if self.data.last_updated else ""
+
     def get_stop_name(self, stop_id: str) -> str:
         s = self.data.stops.get(stop_id)
         return s.name if s else stop_id
@@ -203,7 +222,6 @@ class GTFSStaticManager:
         short = info.short_name if info else ""
         if short and re.fullmatch(r"\d{2,5}", short):
             return short
-        # Try to pull a 3–4 digit standalone number from the trip_id
         m = re.search(r"(?<!\d)(\d{3,4})(?!\d)", trip_id)
         if m:
             return m.group(1)
