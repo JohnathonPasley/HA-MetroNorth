@@ -21,6 +21,8 @@ from .const import (
     DEFAULT_PEAK_2_START,
     DEFAULT_PEAK_INTERVAL,
     DOMAIN,
+    MAX_INTERVAL,
+    MIN_INTERVAL,
 )
 from .coordinator import MetroNorthCoordinator, PeakWindow
 from .gtfs_static import GTFSStaticManager
@@ -38,7 +40,7 @@ def _build_peak_windows(data: dict) -> list[PeakWindow]:
     ]:
         start = data.get(start_key, def_start)
         end = data.get(end_key, def_end)
-        interval = int(data.get(interval_key, DEFAULT_PEAK_INTERVAL))
+        interval = max(MIN_INTERVAL, min(MAX_INTERVAL, int(data.get(interval_key, DEFAULT_PEAK_INTERVAL))))
         if start and end:
             windows.append(PeakWindow(start=start, end=end, interval=interval))
     return windows
