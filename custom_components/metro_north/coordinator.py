@@ -18,7 +18,7 @@ from .const import (
     GTFS_RT_VEHICLES_URL,
 )
 from .gtfs_static import GTFSStaticManager
-from .mta_extensions import extract_stop_time_update_ext
+from .mta_extensions import diagnose_stop_time_update, extract_stop_time_update_ext
 from .mta_mercury import extract_mercury_alert, extract_mercury_entity_selector, get_translated_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -292,15 +292,11 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                         if static_stops
                         else self._build_rt_stops(tu.stop_time_update, stu.stop_sequence)
                     ),
-                    "_diagnostic": {
-                        "rt_direction_id": tu.trip.direction_id,
-                        "static_direction_id": direction,
-                        "trip_short_name_raw": self._gtfs.get_raw_trip_short_name(trip_id) if self._gtfs.is_loaded() else "",
-                        "vehicle_label": vehicle_label,
-                        "mtarr_track_raw": ext_track,
-                        "mtarr_status_raw": mta_status,
-                        "route_id": route_id,
-                    },
+                    "_diagnostic": self._build_diagnostic(
+                        tu, stu, trip_id, route_id, direction,
+                        vehicle_label, scheduled_ts, estimated_ts,
+                        delay_seconds, ext_track, mta_status,
+                    ),
                 }
             )
 
@@ -535,6 +531,87 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 "departure": datetime.fromtimestamp(dep_ts, tz=timezone.utc).isoformat() if dep_ts else "",
             })
         return result
+
+    def _build_diagnostic(
+        self,
+        tu: Any,
+        stu: Any,
+        trip_id: str,
+        route_id: str,
+        direction: int,
+        vehicle_label: str,
+        scheduled_ts: int,
+        estimated_ts: float,
+        delay_seconds: int,
+        ext_track: str,
+        mta_status: str,
+    ) -> dict:
+        """Build the full diagnostic attribute dict for one StopTimeUpdate."""
+        vehicle_id = ""
+        vehicle_license = ""
+        feed_timestamp = 0
+        try:
+            if tu.HasField("vehicle"):
+                vehicle_id = tu.vehicle.id
+                vehicle_license = tu.vehicle.license_plate
+        except Exception:
+            pass
+        try:
+            feed_timestamp = tu.timestamp
+        except Exception:
+            pass
+
+        arr_time = arr_delay = dep_time = dep_delay = None
+        try:
+            if stu.HasField("arrival"):
+                arr_time = datetime.fromtimestamp(stu.arrival.time, tz=timezone.utc).isoformat() if stu.arrival.time else None
+                arr_delay = stu.arrival.delay
+        except Exception:
+            pass
+        try:
+            if stu.HasField("departure"):
+                dep_time = datetime.fromtimestamp(stu.departure.time, tz=timezone.utc).isoformat() if stu.departure.time else None
+                dep_delay = stu.departure.delay
+        except Exception:
+            pass
+
+        mtarr = diagnose_stop_time_update(stu)
+
+        return {
+            # ── Trip descriptor (raw RT values) ──────────────────────────
+            "rt_trip_id": trip_id,
+            "rt_route_id": route_id,
+            "rt_direction_id": tu.trip.direction_id,
+            "rt_start_date": tu.trip.start_date,
+            "rt_start_time": tu.trip.start_time,
+            "rt_schedule_relationship": tu.trip.schedule_relationship,
+            # ── Static GTFS resolved ──────────────────────────────────────
+            "static_direction_id": direction,
+            "static_trip_short_name": self._gtfs.get_raw_trip_short_name(trip_id) if self._gtfs.is_loaded() else "",
+            "static_headsign": self._get_headsign(trip_id),
+            "static_route_name": self._gtfs.get_route_name(route_id) if self._gtfs.is_loaded() else "",
+            # ── Vehicle ───────────────────────────────────────────────────
+            "vehicle_id": vehicle_id,
+            "vehicle_label": vehicle_label,
+            "vehicle_license_plate": vehicle_license,
+            "feed_timestamp": datetime.fromtimestamp(feed_timestamp, tz=timezone.utc).isoformat() if feed_timestamp else "",
+            # ── This stop's RT times ──────────────────────────────────────
+            "stop_id": stu.stop_id,
+            "stop_sequence": stu.stop_sequence,
+            "stop_schedule_relationship": stu.schedule_relationship,
+            "rt_arrival_time": arr_time,
+            "rt_arrival_delay_s": arr_delay,
+            "rt_departure_time": dep_time,
+            "rt_departure_delay_s": dep_delay,
+            "scheduled_time_iso": datetime.fromtimestamp(scheduled_ts, tz=timezone.utc).isoformat(),
+            "estimated_time_iso": datetime.fromtimestamp(estimated_ts, tz=timezone.utc).isoformat(),
+            "delay_seconds": delay_seconds,
+            # ── MTARR extension (field 1005) ──────────────────────────────
+            "mtarr_extension_present": mtarr["mtarr_extension_present"],
+            "mtarr_unknown_field_numbers": mtarr["unknown_field_numbers"],
+            "mtarr_track": ext_track,
+            "mtarr_train_status": mta_status,
+        }
 
     def _estimate_current_stop(
         self, stop_time_updates: Any, now_ts: float
