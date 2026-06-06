@@ -23,9 +23,11 @@ from .const import (
 from .coordinator import MetroNorthCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+_TRACKED_KEY = "_tracked_vehicles"
 
-# entry_id → set of vehicle_ids already added
-_tracked_vehicles: dict[str, set[str]] = {}
+MAX_LABEL_LEN = 32
+MAX_HEADSIGN_LEN = 64
+MAX_TRIP_STOPS = 50
 
 
 async def async_setup_entry(
@@ -35,31 +37,27 @@ async def async_setup_entry(
 ) -> None:
     coordinator: MetroNorthCoordinator = hass.data[DOMAIN][entry.entry_id]
 
+    # Per-entry set stored in hass.data so it is cleaned up on unload.
+    seen: set[str] = set()
+    hass.data[DOMAIN].setdefault(_TRACKED_KEY, {})[entry.entry_id] = seen
+
     def _on_update() -> None:
-        _check_new_vehicles(coordinator, async_add_entities, entry.entry_id)
+        if coordinator.data is None:
+            return
+        new_entities = []
+        for vehicle in coordinator.data.get("vehicles", []):
+            vid = vehicle.get("vehicle_id")
+            if vid and vid not in seen:
+                seen.add(vid)
+                new_entities.append(TrainVehicleTracker(coordinator, vid))
+        if new_entities:
+            async_add_entities(new_entities)
 
-    coordinator.async_add_listener(_on_update)
+    entry.async_on_unload(coordinator.async_add_listener(_on_update))
+    entry.async_on_unload(
+        lambda: hass.data[DOMAIN].get(_TRACKED_KEY, {}).pop(entry.entry_id, None)
+    )
     _on_update()
-
-
-def _check_new_vehicles(
-    coordinator: MetroNorthCoordinator,
-    async_add_entities: AddEntitiesCallback,
-    entry_id: str,
-) -> None:
-    if coordinator.data is None:
-        return
-
-    seen = _tracked_vehicles.setdefault(entry_id, set())
-    new_entities = []
-    for vehicle in coordinator.data.get("vehicles", []):
-        vid = vehicle.get("vehicle_id")
-        if vid and vid not in seen:
-            seen.add(vid)
-            new_entities.append(TrainVehicleTracker(coordinator, vid))
-
-    if new_entities:
-        async_add_entities(new_entities)
 
 
 class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntity):
@@ -82,8 +80,8 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
     @property
     def name(self) -> str:
         v = self._get_vehicle()
-        label = v.get("label", self._vehicle_id) if v else self._vehicle_id
-        headsign = v.get("headsign", "") if v else ""
+        label = (str(v.get("label") or self._vehicle_id))[:MAX_LABEL_LEN] if v else self._vehicle_id
+        headsign = (str(v.get("headsign") or ""))[:MAX_HEADSIGN_LEN] if v else ""
         if headsign:
             return f"Train {label} → {headsign}"
         return f"Metro North Train {label}"
@@ -105,7 +103,7 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
     @property
     def device_info(self) -> dict[str, Any]:
         v = self._get_vehicle()
-        label = v.get("label", self._vehicle_id) if v else self._vehicle_id
+        label = (str(v.get("label") or self._vehicle_id))[:MAX_LABEL_LEN] if v else self._vehicle_id
         return {
             "identifiers": {(DOMAIN, f"vehicle_{self._vehicle_id}")},
             "name": f"Metro North Train {label}",
@@ -119,11 +117,9 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
         if not v:
             return {}
 
-        # Serialize trip_stops from static GTFS
-        raw_stops = v.get("trip_stops", [])
+        raw_stops = v.get("trip_stops", [])[:MAX_TRIP_STOPS]
         trip_stops = []
         for s in raw_stops:
-            # StopTimeInfo dataclass or dict
             if hasattr(s, "stop_name"):
                 trip_stops.append(
                     {

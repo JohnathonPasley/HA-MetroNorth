@@ -18,10 +18,18 @@ from .const import (
     GTFS_RT_VEHICLES_URL,
 )
 from .gtfs_static import GTFSStaticManager
+from .mta_extensions import extract_stop_time_update_ext
 
 _LOGGER = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 20
+_MAX_TRACK_LEN = 16
+_MAX_STATUS_LEN = 64
+
+
+def _sanitize(s: str, max_len: int) -> str:
+    """Strip non-printable characters and truncate to max_len."""
+    return "".join(c for c in s if c.isprintable())[:max_len]
 
 
 class PeakWindow:
@@ -155,8 +163,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         route_id = tu.trip.route_id
         direction = tu.trip.direction_id
         static_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
-
-        track = tu.vehicle.label if tu.HasField("vehicle") else ""
+        vehicle_label = tu.vehicle.label if tu.HasField("vehicle") else ""
 
         for stu in tu.stop_time_update:
             stop_id = stu.stop_id
@@ -182,6 +189,12 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
             delay_minutes = round(delay_seconds / 60)
 
+            # Pull track and official MTA status from MTARR extension (field 1005).
+            # Fall back to vehicle.label for track when the extension is absent.
+            ext_track, mta_status = extract_stop_time_update_ext(stu)
+            track = _sanitize(ext_track or vehicle_label, _MAX_TRACK_LEN)
+            status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
+
             stops[stop_id].append(
                 {
                     "trip_id": trip_id,
@@ -198,7 +211,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                         estimated_ts, tz=timezone.utc
                     ).isoformat(),
                     "delay_minutes": delay_minutes,
-                    "status": _train_status(delay_minutes),
+                    "status": status,
                     "track": track,
                     "stop_sequence": stu.stop_sequence,
                     "destination": self._resolve_terminus(tu, static_stops, last=True),

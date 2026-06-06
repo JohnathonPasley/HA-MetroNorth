@@ -6,14 +6,15 @@ DOMAIN = "metro_north"
 CONF_STATIONS = "stations"
 CONF_DIRECTION = "direction"
 CONF_NUM_TRAINS = "num_trains"
-
-# Direction options
-DIRECTION_BOTH = "both"
-DIRECTION_INBOUND = "inbound"    # direction_id == 0, toward Grand Central
-DIRECTION_OUTBOUND = "outbound"  # direction_id == 1, away from Grand Central
-
-DEFAULT_NUM_TRAINS = 5
 CONF_DEFAULT_INTERVAL = "default_interval"
+
+# Direction options (stored in config entry)
+DIRECTION_BOTH = "both"
+DIRECTION_INBOUND = "inbound"    # direction_id = 1 in GTFS (toward Grand Central)
+DIRECTION_OUTBOUND = "outbound"  # direction_id = 0 in GTFS (away from Grand Central)
+
+# Defaults
+DEFAULT_NUM_TRAINS = 3
 CONF_PEAK_1_START = "peak_1_start"
 CONF_PEAK_1_END = "peak_1_end"
 CONF_PEAK_1_INTERVAL = "peak_1_interval"
@@ -66,17 +67,10 @@ TRAIN_STATUS_BOARDING = "Boarding"
 TRAIN_STATUS_DEPARTED = "Departed"
 TRAIN_STATUS_SCHEDULED = "Scheduled"
 
-# ---------------------------------------------------------------------------
-# Fallback stop list used only before the static GTFS ZIP has been downloaded.
-# Covers Harlem, Hudson, and New Haven lines.
-# IDs are approximate — the coordinator replaces them with live GTFS IDs on
-# first successful download.
-# ---------------------------------------------------------------------------
-FALLBACK_STATIONS: dict[str, str] = {
-    # ── Shared terminal ──────────────────────────────────────────────────
+# Harlem Line fallback stop list (stop_id → name) used before GTFS loads
+HARLEM_LINE_STATIONS = {
     "1": "Grand Central Terminal",
     "2": "Harlem-125th Street",
-    # ── Harlem Line (GCT → Wassaic) ──────────────────────────────────────
     "3": "Melrose",
     "4": "Tremont",
     "5": "Fordham",
@@ -109,68 +103,9 @@ FALLBACK_STATIONS: dict[str, str] = {
     "32": "Harlem Valley-Wingdale",
     "33": "Tenmile River",
     "34": "Wassaic",
-    # ── Hudson Line (GCT → Poughkeepsie) ────────────────────────────────
-    "35": "Yonkers",
-    "36": "Greystone",
-    "37": "Hastings-on-Hudson",
-    "38": "Dobbs Ferry",
-    "39": "Ardsley-on-Hudson",
-    "40": "Irvington",
-    "41": "Tarrytown",
-    "42": "Philipse Manor",
-    "43": "Scarborough",
-    "44": "Ossining",
-    "45": "Croton-Harmon",
-    "46": "Cortlandt",
-    "47": "Peekskill",
-    "48": "Manitou",
-    "49": "Cold Spring",
-    "50": "Garrison",
-    "51": "Breakneck Ridge",
-    "52": "Beacon",
-    "53": "New Hamburg",
-    "54": "Poughkeepsie",
-    # ── New Haven Line (GCT → New Haven) ────────────────────────────────
-    "55": "Pelham",
-    "56": "Mount Vernon West",
-    "57": "Fleetwood",
-    "58": "Tuckahoe",          # shared with Harlem in practice
-    "59": "Larchmont",
-    "60": "Mamaroneck",
-    "61": "Harrison",
-    "62": "Rye",
-    "63": "Port Chester",
-    "64": "Greenwich",
-    "65": "Cos Cob",
-    "66": "Riverside",
-    "67": "Old Greenwich",
-    "68": "Stamford",
-    "69": "Noroton Heights",
-    "70": "Darien",
-    "71": "Rowayton",
-    "72": "South Norwalk",
-    "73": "East Norwalk",
-    "74": "Westport",
-    "75": "Green's Farms",
-    "76": "Southport",
-    "77": "Fairfield",
-    "78": "Fairfield Metro",
-    "79": "Bridgeport",
-    "80": "Stratford",
-    "81": "Milford",
-    "82": "West Haven",
-    "83": "New Haven State Street",
-    "84": "New Haven",
-    # ── New Haven Line branches ──────────────────────────────────────────
-    "85": "New Rochelle",
-    "86": "Crestwood",         # shared Harlem/New Haven
-    "87": "Tuckahoe",
-    "88": "Bronxville",
-    "89": "Mount Vernon East",
 }
 
-# Reverse lookup used as fallback when GTFS isn't yet loaded
-STATION_NAME_TO_ID: dict[str, str] = {v: k for k, v in FALLBACK_STATIONS.items()}
+STATION_NAME_TO_ID = {v: k for k, v in HARLEM_LINE_STATIONS.items()}
 
-# Keep old name as alias so any third-party code referencing it doesn't break
-HARLEM_LINE_STATIONS = FALLBACK_STATIONS
+# Alias used by config_flow and coordinator
+FALLBACK_STATIONS = HARLEM_LINE_STATIONS
