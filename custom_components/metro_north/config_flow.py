@@ -14,6 +14,8 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_DEFAULT_INTERVAL,
+    CONF_DIRECTION,
+    CONF_NUM_TRAINS,
     CONF_PEAK_1_END,
     CONF_PEAK_1_INTERVAL,
     CONF_PEAK_1_START,
@@ -21,21 +23,31 @@ from .const import (
     CONF_PEAK_2_INTERVAL,
     CONF_PEAK_2_START,
     CONF_STATIONS,
+    DEFAULT_NUM_TRAINS,
     DEFAULT_OFF_PEAK_INTERVAL,
     DEFAULT_PEAK_1_END,
     DEFAULT_PEAK_1_START,
     DEFAULT_PEAK_2_END,
     DEFAULT_PEAK_2_START,
     DEFAULT_PEAK_INTERVAL,
+    DIRECTION_BOTH,
+    DIRECTION_INBOUND,
+    DIRECTION_OUTBOUND,
     DOMAIN,
+    FALLBACK_STATIONS,
     GTFS_RT_URL,
-    HARLEM_LINE_STATIONS,
     MAX_INTERVAL,
     MIN_INTERVAL,
 )
 from .gtfs_static import GTFSStaticManager
 
 _LOGGER = logging.getLogger(__name__)
+
+_DIRECTION_OPTIONS = [
+    {"value": DIRECTION_BOTH, "label": "Both directions"},
+    {"value": DIRECTION_INBOUND, "label": "Inbound only (toward Grand Central)"},
+    {"value": DIRECTION_OUTBOUND, "label": "Outbound only (from Grand Central)"},
+]
 
 
 def _test_connection() -> None:
@@ -47,7 +59,7 @@ def _build_station_options(gtfs: GTFSStaticManager) -> list[selector.SelectOptio
     if gtfs.is_loaded():
         names = gtfs.sorted_stop_names()
     else:
-        names = sorted(HARLEM_LINE_STATIONS.values())
+        names = sorted(FALLBACK_STATIONS.values())
     return [{"value": n, "label": n} for n in names]
 
 
@@ -63,7 +75,7 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Step 1: pick stations (station list loaded from GTFS)."""
+        """Step 1: pick stations, direction, and number of train sensors."""
         errors: dict[str, str] = {}
 
         if self._gtfs is None:
@@ -86,19 +98,33 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except requests.RequestException:
                     errors["base"] = "cannot_connect"
                 else:
-                    self._carry = {CONF_STATIONS: selected}
+                    self._carry = {
+                        CONF_STATIONS: selected,
+                        CONF_DIRECTION: user_input.get(CONF_DIRECTION, DIRECTION_BOTH),
+                        CONF_NUM_TRAINS: max(1, min(5, int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS)))),
+                    }
                     return await self.async_step_schedule()
 
         station_options = _build_station_options(self._gtfs)
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_STATIONS): selector.SelectSelector(
+                vol.Optional(CONF_STATIONS, default=[]): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=station_options,
                         multiple=True,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
+                ),
+                vol.Optional(CONF_DIRECTION, default=DIRECTION_BOTH): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=_DIRECTION_OPTIONS,
+                        multiple=False,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(CONF_NUM_TRAINS, default=DEFAULT_NUM_TRAINS): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=5, step=1, mode=selector.NumberSelectorMode.BOX)
                 ),
             }
         )
@@ -160,14 +186,26 @@ class OptionsFlow(config_entries.OptionsFlow):
 
         schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_STATIONS, default=current_stations
-                ): selector.SelectSelector(
+                vol.Optional(CONF_STATIONS, default=current_stations): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=station_options,
                         multiple=True,
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
+                ),
+                vol.Optional(
+                    CONF_DIRECTION, default=current.get(CONF_DIRECTION, DIRECTION_BOTH)
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=_DIRECTION_OPTIONS,
+                        multiple=False,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
+                    CONF_NUM_TRAINS, default=int(current.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=5, step=1, mode=selector.NumberSelectorMode.BOX)
                 ),
                 **_schedule_fields(current),
             }
