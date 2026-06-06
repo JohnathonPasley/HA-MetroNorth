@@ -51,6 +51,13 @@ _LINE_PICTURES: dict[str, str] = {
     ),
 }
 
+# Gray square "M" pin for station markers
+_STATION_PICTURE = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E"
+    "%3Crect x='4' y='4' width='16' height='16' rx='3' fill='%23424242'/%3E"
+    "%3Cpath d='M8 16V8h2l2 4 2-4h2v8h-2v-4l-2 4-2-4v4z' fill='white'/%3E%3C/svg%3E"
+)
+
 
 def _line_key(route_name: str) -> str:
     rn = (route_name or "").lower()
@@ -69,6 +76,17 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: MetroNorthCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    # ── Station markers (static, from GTFS stops.txt) ────────────────────
+    if coordinator._gtfs.is_loaded():
+        station_entities = [
+            StationMarkerTracker(stop_id, stop_info)
+            for stop_id, stop_info in coordinator._gtfs.get_all_stops().items()
+            if stop_info.lat != 0.0 or stop_info.lon != 0.0
+        ]
+        if station_entities:
+            async_add_entities(station_entities)
+            _LOGGER.debug("Added %d station markers to map", len(station_entities))
 
     seen: set[str] = set()
     hass.data[DOMAIN].setdefault(_TRACKED_KEY, {})[entry.entry_id] = seen
@@ -203,3 +221,46 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
             "current_stop_sequence": v.get("current_stop_sequence"),
             ATTR_TRIP_STOPS: trip_stops,
         }
+
+
+class StationMarkerTracker(TrackerEntity):
+    """Fixed map pin for a Metro North station, sourced from GTFS stops.txt."""
+
+    _attr_has_entity_name = True
+    _attr_source_type = SourceType.GPS
+    _attr_icon = "mdi:train-station"
+    _attr_should_poll = False
+
+    def __init__(self, stop_id: str, stop_info: Any) -> None:
+        self._stop_id = stop_id
+        self._stop_info = stop_info
+        self._attr_unique_id = f"{DOMAIN}_station_{stop_id}"
+        self._attr_name = stop_info.name
+
+    @property
+    def latitude(self) -> float | None:
+        return self._stop_info.lat if self._stop_info.lat != 0.0 else None
+
+    @property
+    def longitude(self) -> float | None:
+        return self._stop_info.lon if self._stop_info.lon != 0.0 else None
+
+    @property
+    def entity_picture(self) -> str:
+        return _STATION_PICTURE
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return {
+            "identifiers": {(DOMAIN, "metro_north_network")},
+            "name": "Metro North Network",
+            "manufacturer": "MTA Metro North",
+            "model": "Station Network",
+        }
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {"stop_id": self._stop_id}
+        if self._stop_info.platform_code:
+            attrs["platform_code"] = self._stop_info.platform_code
+        return attrs
