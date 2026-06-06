@@ -5,6 +5,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.util.slugify import slugify
 
 from .const import (
     CONF_DEFAULT_INTERVAL,
@@ -33,6 +34,67 @@ from .gtfs_static import GTFSStaticManager
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor", "device_tracker"]
+_STATION_ZONES_KEY = "_station_zones"
+
+
+async def _async_create_station_zones(hass: HomeAssistant, gtfs_static) -> set[str]:
+    """Create HA zones for all GTFS stops. Returns set of created entity_ids."""
+    if not hass.services.has_service("zone", "create"):
+        _LOGGER.warning("zone.create service not available; station zones skipped")
+        return set()
+
+    created: set[str] = set()
+    stops = gtfs_static.get_all_stops()
+
+    for stop_id, stop_info in stops.items():
+        if stop_info.lat == 0.0 and stop_info.lon == 0.0:
+            continue
+
+        zone_name = f"MNR {stop_info.name}"
+        entity_id = f"zone.{slugify(zone_name)}"
+
+        if hass.states.get(entity_id) is not None:
+            created.add(entity_id)
+            continue
+
+        try:
+            await hass.services.async_call(
+                "zone",
+                "create",
+                {
+                    "name": zone_name,
+                    "latitude": float(stop_info.lat),
+                    "longitude": float(stop_info.lon),
+                    "radius": 100,
+                    "icon": "mdi:train-station",
+                    "passive": True,
+                },
+                blocking=True,
+            )
+            created.add(entity_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Could not create zone for %s: %s", stop_info.name, err)
+
+    _LOGGER.info("Created/verified %d Metro North station zones", len(created))
+    return created
+
+
+async def _async_remove_station_zones(hass: HomeAssistant, entity_ids: set[str]) -> None:
+    """Delete station zones created by this integration."""
+    if not hass.services.has_service("zone", "delete"):
+        return
+
+    for entity_id in entity_ids:
+        if hass.states.get(entity_id) is not None:
+            try:
+                await hass.services.async_call(
+                    "zone",
+                    "delete",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Could not delete zone %s: %s", entity_id, err)
 
 
 def _build_peak_windows(data: dict) -> list[PeakWindow]:
@@ -78,13 +140,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register manual GTFS refresh service (once; safe to call on every entry load)
     if not hass.services.has_service(DOMAIN, "update_gtfs"):
         async def _handle_update_gtfs(call) -> None:  # type: ignore[type-arg]
-            """Force-download fresh GTFS static data and reload all entries."""
+            """Force-download fresh GTFS static data, recreate zones, reload all entries."""
             for eid, coord in list(hass.data.get(DOMAIN, {}).items()):
                 if isinstance(coord, MetroNorthCoordinator):
                     await coord._gtfs.async_force_refresh()
+                    # Refresh station zones with updated GTFS data
+                    if coord._gtfs.is_loaded():
+                        existing = hass.data[DOMAIN].get(_STATION_ZONES_KEY, set())
+                        await _async_remove_station_zones(hass, existing)
+                        hass.data[DOMAIN][_STATION_ZONES_KEY] = set()
+                        new_zones = await _async_create_station_zones(hass, coord._gtfs)
+                        hass.data[DOMAIN][_STATION_ZONES_KEY] = new_zones
                     await hass.config_entries.async_reload(eid)
 
         hass.services.async_register(DOMAIN, "update_gtfs", _handle_update_gtfs)
+
+    # Create station zones once (shared across all config entries)
+    if _STATION_ZONES_KEY not in hass.data[DOMAIN]:
+        hass.data[DOMAIN][_STATION_ZONES_KEY] = set()
+        if coordinator._gtfs.is_loaded():
+            zone_ids = await _async_create_station_zones(hass, coordinator._gtfs)
+            hass.data[DOMAIN][_STATION_ZONES_KEY] = zone_ids
 
     return True
 
@@ -94,6 +170,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clean up station zones when the integration is fully removed."""
+    remaining = [
+        e for e in hass.config_entries.async_entries(DOMAIN)
+        if e.entry_id != entry.entry_id
+    ]
+    if remaining:
+        return
+    zone_ids = hass.data.get(DOMAIN, {}).pop(_STATION_ZONES_KEY, set())
+    if zone_ids:
+        await _async_remove_station_zones(hass, zone_ids)
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
