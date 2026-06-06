@@ -117,6 +117,23 @@ def _direction_suffix(direction: str) -> str:
     return ""
 
 
+def _train_attrs_summary(t: dict[str, Any]) -> dict[str, Any]:
+    """Compact attribute dict for the upcoming-trains list — omits trip_stops."""
+    return {
+        ATTR_TRAIN_NUMBER: t.get("train_number") or t.get("trip_id", ""),
+        ATTR_TRACK: t.get("track", ""),
+        ATTR_SCHEDULED_TIME: _fmt_time(t.get("scheduled_time")),
+        ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
+        ATTR_DELAY_MINUTES: t.get("delay_minutes", 0),
+        "status": t.get("status", ""),
+        ATTR_ORIGIN: t.get("origin", ""),
+        ATTR_DESTINATION: t.get("destination", ""),
+        ATTR_HEADSIGN: t.get("headsign") or t.get("destination", ""),
+        ATTR_LINE: t.get("route_name", "Metro North"),
+        ATTR_DIRECTION: "Inbound" if t.get("direction") == 1 else "Outbound",
+    }
+
+
 def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
     """Build the common attribute dict for one train."""
     stops_raw = t.get("trip_stops", [])[:MAX_TRIP_STOPS]
@@ -233,7 +250,7 @@ class UpcomingTrainsSensor(_StationBase, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         trains = _filtered_trains(self._get_trains(), self._direction)[:MAX_UPCOMING]
-        return {ATTR_UPCOMING_TRAINS: [_train_attrs(t) for t in trains]}
+        return {ATTR_UPCOMING_TRAINS: [_train_attrs_summary(t) for t in trains]}
 
 
 class ServiceAlertSensor(_StationBase, SensorEntity):
