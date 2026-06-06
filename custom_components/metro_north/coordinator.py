@@ -151,6 +151,16 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         # Supplement with dedicated vehicle feed (may fail silently)
         self._supplement_vehicles(vehicles)
 
+        # If the feed has no real VehiclePosition data (the vehicles endpoint is
+        # frequently unavailable for Metro North), synthesize positions from
+        # TripUpdate data using each trip's current/next stop lat/lon.
+        if not vehicles and self._gtfs.is_loaded():
+            for entity in feed.entity:
+                if entity.HasField("trip_update"):
+                    v = self._synthesize_vehicle(entity.trip_update, now_ts)
+                    if v and v["vehicle_id"] not in vehicles:
+                        vehicles[v["vehicle_id"]] = v
+
         return stops, list(vehicles.values())
 
     def _parse_trip_update(
@@ -262,6 +272,71 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             "current_stop_name": current_stop_name,
             "current_stop_sequence": vp.current_stop_sequence,
             "timestamp": vp.timestamp,
+            "trip_stops": trip_stops,
+        }
+
+    def _synthesize_vehicle(self, tu: Any, now_ts: float) -> dict | None:
+        """Build an approximate vehicle from TripUpdate + static GTFS stop coordinates.
+
+        Used when no real VehiclePosition data is available.  The pin appears at
+        the train's current or next scheduled stop.
+        """
+        if not self._gtfs.is_loaded():
+            return None
+
+        trip_id = tu.trip.trip_id
+        route_id = tu.trip.route_id
+
+        # Find the first stop that hasn't been departed yet.
+        current_stop_id = None
+        current_stop_seq = 0
+        for stu in tu.stop_time_update:
+            dep_ts = 0
+            if stu.HasField("departure") and stu.departure.time:
+                dep_ts = stu.departure.time + (stu.departure.delay or 0)
+            elif stu.HasField("arrival") and stu.arrival.time:
+                dep_ts = stu.arrival.time + (stu.arrival.delay or 0)
+            if dep_ts and dep_ts >= now_ts - 120:
+                current_stop_id = stu.stop_id
+                current_stop_seq = stu.stop_sequence
+                break
+
+        if not current_stop_id:
+            return None
+
+        stop_info = self._gtfs.data.stops.get(current_stop_id)
+        if not stop_info or (stop_info.lat == 0.0 and stop_info.lon == 0.0):
+            return None
+
+        vehicle_id = (tu.vehicle.id if tu.HasField("vehicle") and tu.vehicle.id else trip_id)
+        vehicle_label = (tu.vehicle.label if tu.HasField("vehicle") and tu.vehicle.label else trip_id)
+
+        raw_stops = self._gtfs.get_trip_stops(trip_id)
+        trip_stops = [
+            {
+                "stop_sequence": s.stop_sequence,
+                "stop_name": s.stop_name,
+                "arrival": s.arrival_time,
+                "departure": s.departure_time,
+            }
+            for s in raw_stops
+        ]
+
+        return {
+            "vehicle_id": _sanitize(vehicle_id, 64),
+            "label": _sanitize(vehicle_label, _MAX_TRACK_LEN),
+            "trip_id": trip_id,
+            "route_id": route_id,
+            "route_name": self._gtfs.get_route_name(route_id),
+            "headsign": self._get_headsign(trip_id),
+            "latitude": stop_info.lat,
+            "longitude": stop_info.lon,
+            "bearing": 0,
+            "speed": 0,
+            "current_stop_id": current_stop_id,
+            "current_stop_name": stop_info.name,
+            "current_stop_sequence": current_stop_seq,
+            "timestamp": int(now_ts),
             "trip_stops": trip_stops,
         }
 
