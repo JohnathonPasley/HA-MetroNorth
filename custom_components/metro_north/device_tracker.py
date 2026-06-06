@@ -103,7 +103,7 @@ async def async_setup_entry(
                 )
                 if entity_id:
                     registry.async_remove(entity_id)
-            seen -= stale
+            seen.difference_update(stale)
 
     entry.async_on_unload(coordinator.async_add_listener(_on_update))
     entry.async_on_unload(
