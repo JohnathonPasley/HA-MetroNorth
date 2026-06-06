@@ -243,9 +243,14 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             track = _sanitize(ext_track or vehicle_label, _MAX_TRACK_LEN)
             status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
 
+            train_number = (
+                self._gtfs.get_trip_short_name(trip_id) if self._gtfs.is_loaded() else ""
+            ) or trip_id
+
             stops[stop_id].append(
                 {
                     "trip_id": trip_id,
+                    "train_number": train_number,
                     "route_id": route_id,
                     "route_name": self._gtfs.get_route_name(route_id)
                     if self._gtfs.is_loaded()
@@ -295,9 +300,13 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             }
             for s in raw_stops
         ]
+        train_number = (
+            self._gtfs.get_trip_short_name(trip_id) if self._gtfs.is_loaded() else ""
+        ) or vp.vehicle.label or vp.vehicle.id or entity_id
         return {
             "vehicle_id": vp.vehicle.id or entity_id,
             "label": vp.vehicle.label or vp.vehicle.id or entity_id,
+            "train_number": train_number,
             "trip_id": trip_id,
             "route_id": route_id,
             "route_name": self._gtfs.get_route_name(route_id) if self._gtfs.is_loaded() else route_id,
@@ -417,9 +426,11 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             for s in raw_stops
         ]
 
+        train_number = self._gtfs.get_trip_short_name(trip_id) or vehicle_label
         return {
             "vehicle_id": _sanitize(vehicle_id, 64),
             "label": _sanitize(vehicle_label, _MAX_TRACK_LEN),
+            "train_number": _sanitize(train_number, _MAX_TRACK_LEN),
             "trip_id": trip_id,
             "route_id": route_id,
             "route_name": self._gtfs.get_route_name(route_id),

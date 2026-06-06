@@ -17,6 +17,7 @@ from .const import (
     ATTR_HEADSIGN,
     ATTR_LINE,
     ATTR_SPEED,
+    ATTR_TRAIN_NUMBER,
     ATTR_TRIP_STOPS,
     ATTR_VEHICLE_ID,
     DOMAIN,
@@ -192,7 +193,7 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
 
         return {
             ATTR_VEHICLE_ID: v.get("vehicle_id"),
-            "label": v.get("label"),
+            ATTR_TRAIN_NUMBER: v.get("train_number") or v.get("label") or v.get("trip_id"),
             "trip_id": v.get("trip_id"),
             ATTR_LINE: v.get("route_name", "Metro North"),
             ATTR_HEADSIGN: v.get("headsign", ""),

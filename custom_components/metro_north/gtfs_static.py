@@ -41,6 +41,7 @@ class TripInfo:
     route_id: str
     headsign: str
     direction_id: int
+    short_name: str = ""  # trip_short_name → human-readable train number, e.g. "509"
 
 
 class GTFSStaticData:
@@ -119,6 +120,7 @@ class GTFSStaticManager:
                                     route_id=row["route_id"],
                                     headsign=row.get("trip_headsign", "").strip(),
                                     direction_id=int(row.get("direction_id") or 0),
+                                    short_name=row.get("trip_short_name", "").strip(),
                                 )
                             except (KeyError, ValueError):
                                 pass
@@ -177,6 +179,11 @@ class GTFSStaticManager:
 
     def get_trip_info(self, trip_id: str) -> TripInfo | None:
         return self.data.trips.get(trip_id)
+
+    def get_trip_short_name(self, trip_id: str) -> str:
+        """Return the human-readable train number (trip_short_name), e.g. '509'."""
+        info = self.data.trips.get(trip_id)
+        return info.short_name if info else ""
 
     def get_route_name(self, route_id: str) -> str:
         return self.data.routes.get(route_id, route_id)

@@ -117,7 +117,7 @@ def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
         if isinstance(s, dict)
     ]
     return {
-        ATTR_TRAIN_NUMBER: t.get("trip_id", ""),
+        ATTR_TRAIN_NUMBER: t.get("train_number") or t.get("trip_id", ""),
         ATTR_TRACK: t.get("track", ""),
         ATTR_SCHEDULED_TIME: _fmt_time(t.get("scheduled_time")),
         ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
