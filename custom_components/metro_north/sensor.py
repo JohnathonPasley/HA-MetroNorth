@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    ATTR_CURRENT_STOP,
     ATTR_DELAY_MINUTES,
     ATTR_DESTINATION,
     ATTR_DIRECTION,
@@ -22,11 +23,14 @@ from .const import (
     ATTR_ORIGIN,
     ATTR_SCHEDULED_TIME,
     ATTR_SERVICE_ALERTS,
+    ATTR_SERVICE_TYPE,
+    ATTR_STOPS_REMAINING,
     ATTR_TRACK,
     ATTR_TRAIN_NUMBER,
     ATTR_TRIP_STOPS,
     ATTR_UPCOMING_TRAINS,
     CONF_DIRECTION,
+    CONF_LOCAL_STOP_INDICATORS,
     CONF_NUM_TRAINS,
     CONF_STATIONS,
     DEFAULT_NUM_TRAINS,
@@ -62,6 +66,12 @@ async def async_setup_entry(
 
     num_trains = max(1, min(20, int(config.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))))
 
+    raw_indicators = config.get(CONF_LOCAL_STOP_INDICATORS, "")
+    local_indicators: set[str] = (
+        {s.strip() for s in raw_indicators.split(",") if s.strip()}
+        if raw_indicators else set()
+    )
+
     entities: list[SensorEntity] = []
     expected_unique_ids: set[str] = set()
 
@@ -74,7 +84,7 @@ async def async_setup_entry(
             uid = f"{DOMAIN}_train_{position}_{stop_id}"
             expected_unique_ids.add(uid)
             entities.append(
-                TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction)
+                TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction, local_indicators)
             )
         expected_unique_ids.add(f"{DOMAIN}_upcoming_{stop_id}")
         expected_unique_ids.add(f"{DOMAIN}_alerts_{stop_id}")
@@ -200,10 +210,12 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         station_name: str,
         position: int,
         direction: str,
+        local_indicators: set[str] | None = None,
     ) -> None:
         super().__init__(coordinator, stop_id, station_name)
         self._position = position
         self._direction = direction
+        self._local_indicators: set[str] = local_indicators or set()
         suffix = _direction_suffix(direction)
         self._attr_unique_id = f"{DOMAIN}_train_{position}_{stop_id}"
         self._attr_name = f"Train {position}{suffix}"
@@ -215,6 +227,13 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
             return trains[self._position - 1]
         return None
 
+    def _resolve_service_type(self, t: dict[str, Any]) -> str:
+        """Override heuristic with user-configured local indicator stops."""
+        if not self._local_indicators:
+            return t.get("service_type", "")
+        all_stops = set(t.get("all_stop_names", []))
+        return "Local" if all_stops & self._local_indicators else "Express"
+
     @property
     def native_value(self) -> str | None:
         t = self._get_target()
@@ -223,7 +242,14 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         t = self._get_target()
-        return _train_attrs(t) if t else {}
+        if not t:
+            return {}
+        attrs = _train_attrs(t)
+        attrs[ATTR_SERVICE_TYPE] = self._resolve_service_type(t)
+        attrs[ATTR_CURRENT_STOP] = t.get("current_stop", "")
+        attrs[ATTR_STOPS_REMAINING] = t.get("stops_remaining", 0)
+        attrs["diagnostic"] = t.get("_diagnostic", {})
+        return attrs
 
 
 class UpcomingTrainsSensor(_StationBase, SensorEntity):

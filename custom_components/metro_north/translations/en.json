@@ -42,6 +42,7 @@
           "stations": "Stations to monitor",
           "direction": "Train direction",
           "num_trains": "Individual train sensors per station (1–20)",
+          "local_stop_indicators": "Local train indicator stops (comma-separated stop names — if a train stops here it is classified Local)",
           "peak_1_days": "Peak window 1 — days",
           "peak_1_start": "Peak window 1 — start",
           "peak_1_end": "Peak window 1 — end",

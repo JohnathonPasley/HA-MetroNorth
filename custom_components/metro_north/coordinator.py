@@ -256,6 +256,11 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 self._gtfs.get_trip_short_name(trip_id) if self._gtfs.is_loaded() else ""
             ) or trip_id
 
+            current_stop, stops_remaining = self._estimate_current_stop(
+                tu.stop_time_update, now_ts
+            )
+            service_type = self._classify_service_type(static_stops)
+
             stops[stop_id].append(
                 {
                     "trip_id": trip_id,
@@ -278,11 +283,24 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "stop_sequence": stu.stop_sequence,
                     "destination": self._resolve_terminus(tu, static_stops, last=True),
                     "origin": self._resolve_terminus(tu, static_stops, last=False),
+                    "current_stop": current_stop,
+                    "stops_remaining": stops_remaining,
+                    "service_type": service_type,
+                    "all_stop_names": [s.stop_name for s in static_stops],
                     "trip_stops": (
                         self._build_upcoming_stops(static_stops, stu.stop_sequence)
                         if static_stops
                         else self._build_rt_stops(tu.stop_time_update, stu.stop_sequence)
                     ),
+                    "_diagnostic": {
+                        "rt_direction_id": tu.trip.direction_id,
+                        "static_direction_id": direction,
+                        "trip_short_name_raw": self._gtfs.get_raw_trip_short_name(trip_id) if self._gtfs.is_loaded() else "",
+                        "vehicle_label": vehicle_label,
+                        "mtarr_track_raw": ext_track,
+                        "mtarr_status_raw": mta_status,
+                        "route_id": route_id,
+                    },
                 }
             )
 
@@ -517,6 +535,35 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 "departure": datetime.fromtimestamp(dep_ts, tz=timezone.utc).isoformat() if dep_ts else "",
             })
         return result
+
+    def _estimate_current_stop(
+        self, stop_time_updates: Any, now_ts: float
+    ) -> tuple[str, int]:
+        """Return (last_departed_stop_name, upcoming_stop_count) from RT data."""
+        current_stop = ""
+        stops_remaining = 0
+        for stu in sorted(stop_time_updates, key=lambda s: s.stop_sequence):
+            dep_ts = 0
+            if stu.HasField("departure") and stu.departure.time:
+                dep_ts = stu.departure.time + (stu.departure.delay or 0)
+            elif stu.HasField("arrival") and stu.arrival.time:
+                dep_ts = stu.arrival.time + (stu.arrival.delay or 0)
+            if dep_ts and dep_ts <= now_ts:
+                current_stop = (
+                    self._gtfs.get_stop_name(stu.stop_id)
+                    if self._gtfs.is_loaded()
+                    else FALLBACK_STATIONS.get(stu.stop_id, stu.stop_id)
+                )
+            elif dep_ts:
+                stops_remaining += 1
+        return current_stop, stops_remaining
+
+    @staticmethod
+    def _classify_service_type(static_stops: list) -> str:
+        """Heuristic: trains with >10 scheduled stops are Local, otherwise Express."""
+        if not static_stops:
+            return ""
+        return "Local" if len(static_stops) > 10 else "Express"
 
     def _resolve_terminus(self, trip_update: Any, static_stops: list, last: bool) -> str:
         if static_stops:

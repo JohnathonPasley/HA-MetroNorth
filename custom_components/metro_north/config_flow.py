@@ -15,6 +15,7 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_DEFAULT_INTERVAL,
     CONF_DIRECTION,
+    CONF_LOCAL_STOP_INDICATORS,
     CONF_NUM_TRAINS,
     CONF_PEAK_1_DAYS,
     CONF_PEAK_1_END,
@@ -219,6 +220,12 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_NUM_TRAINS, default=int(current.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=20, step=1, mode=selector.NumberSelectorMode.BOX)
+                ),
+                vol.Optional(
+                    CONF_LOCAL_STOP_INDICATORS,
+                    default=current.get(CONF_LOCAL_STOP_INDICATORS, ""),
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=False)
                 ),
                 **_schedule_fields(current),
             }

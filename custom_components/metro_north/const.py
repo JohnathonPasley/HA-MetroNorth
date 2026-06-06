@@ -63,6 +63,11 @@ ATTR_OCCUPANCY = "occupancy"
 ATTR_TRIP_STOPS = "trip_stops"
 ATTR_HEADSIGN = "headsign"
 ATTR_SERVICE_ALERTS = "service_alerts"
+ATTR_CURRENT_STOP = "current_stop"
+ATTR_STOPS_REMAINING = "stops_remaining"
+ATTR_SERVICE_TYPE = "service_type"
+
+CONF_LOCAL_STOP_INDICATORS = "local_stop_indicators"
 
 # Train status labels
 TRAIN_STATUS_ON_TIME = "On Time"

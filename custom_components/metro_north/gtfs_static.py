@@ -187,6 +187,11 @@ class GTFSStaticManager:
     def get_trip_info(self, trip_id: str) -> TripInfo | None:
         return self.data.trips.get(trip_id)
 
+    def get_raw_trip_short_name(self, trip_id: str) -> str:
+        """Return trip_short_name exactly as it appears in trips.txt."""
+        info = self.data.trips.get(trip_id)
+        return info.short_name if info else ""
+
     def get_trip_short_name(self, trip_id: str) -> str:
         """Return the human-readable train number for display (e.g. '509').
 
