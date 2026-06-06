@@ -5,7 +5,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.util.slugify import slugify
+from homeassistant.util import slugify
 
 from .const import (
     CONF_DEFAULT_INTERVAL,
@@ -65,9 +65,9 @@ async def _async_create_station_zones(hass: HomeAssistant, gtfs_static) -> set[s
                     "name": zone_name,
                     "latitude": float(stop_info.lat),
                     "longitude": float(stop_info.lon),
-                    "radius": 100,
+                    "radius": 250,
                     "icon": "mdi:train-station",
-                    "passive": True,
+                    "passive": False,
                 },
                 blocking=True,
             )
