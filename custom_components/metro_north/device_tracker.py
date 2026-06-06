@@ -8,6 +8,7 @@ from homeassistant.components.device_tracker import SourceType
 from homeassistant.components.device_tracker.config_entry import TrackerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -29,6 +30,37 @@ MAX_LABEL_LEN = 32
 MAX_HEADSIGN_LEN = 64
 MAX_TRIP_STOPS = 50
 
+# Colored SVG circle pins per line (URL-encoded data URIs)
+_LINE_PICTURES: dict[str, str] = {
+    "harlem": (
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E"
+        "%3Ccircle cx='12' cy='12' r='10' fill='%231565C0'/%3E%3C/svg%3E"
+    ),
+    "hudson": (
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E"
+        "%3Ccircle cx='12' cy='12' r='10' fill='%232E7D32'/%3E%3C/svg%3E"
+    ),
+    "new_haven": (
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E"
+        "%3Ccircle cx='12' cy='12' r='10' fill='%23C62828'/%3E%3C/svg%3E"
+    ),
+    "unknown": (
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E"
+        "%3Ccircle cx='12' cy='12' r='10' fill='%23757575'/%3E%3C/svg%3E"
+    ),
+}
+
+
+def _line_key(route_name: str) -> str:
+    rn = (route_name or "").lower()
+    if "harlem" in rn:
+        return "harlem"
+    if "hudson" in rn:
+        return "hudson"
+    if "haven" in rn or "new haven" in rn:
+        return "new_haven"
+    return "unknown"
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -37,13 +69,20 @@ async def async_setup_entry(
 ) -> None:
     coordinator: MetroNorthCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Per-entry set stored in hass.data so it is cleaned up on unload.
     seen: set[str] = set()
     hass.data[DOMAIN].setdefault(_TRACKED_KEY, {})[entry.entry_id] = seen
 
     def _on_update() -> None:
         if coordinator.data is None:
             return
+
+        current_ids = {
+            v["vehicle_id"]
+            for v in coordinator.data.get("vehicles", [])
+            if v.get("vehicle_id")
+        }
+
+        # Add newly seen vehicles
         new_entities = []
         for vehicle in coordinator.data.get("vehicles", []):
             vid = vehicle.get("vehicle_id")
@@ -53,6 +92,18 @@ async def async_setup_entry(
         if new_entities:
             async_add_entities(new_entities)
 
+        # Remove vehicles that have left the feed
+        stale = seen - current_ids
+        if stale:
+            registry = er.async_get(hass)
+            for vid in stale:
+                entity_id = registry.async_get_entity_id(
+                    "device_tracker", DOMAIN, f"{DOMAIN}_vehicle_{vid}"
+                )
+                if entity_id:
+                    registry.async_remove(entity_id)
+            seen -= stale
+
     entry.async_on_unload(coordinator.async_add_listener(_on_update))
     entry.async_on_unload(
         lambda: hass.data[DOMAIN].get(_TRACKED_KEY, {}).pop(entry.entry_id, None)
@@ -61,7 +112,7 @@ async def async_setup_entry(
 
 
 class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntity):
-    """A Metro North train vehicle — appears as a pin on the HA map."""
+    """A Metro North train vehicle — color-coded pin on the HA map."""
 
     def __init__(self, coordinator: MetroNorthCoordinator, vehicle_id: str) -> None:
         super().__init__(coordinator)
@@ -85,6 +136,13 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
         if headsign:
             return f"Train {label} → {headsign}"
         return f"Metro North Train {label}"
+
+    @property
+    def entity_picture(self) -> str:
+        """Return a colored circle SVG based on the train's line."""
+        v = self._get_vehicle()
+        route_name = v.get("route_name", "") if v else ""
+        return _LINE_PICTURES[_line_key(route_name)]
 
     @property
     def latitude(self) -> float | None:
