@@ -101,7 +101,7 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._carry = {
                         CONF_STATIONS: selected,
                         CONF_DIRECTION: user_input.get(CONF_DIRECTION, DIRECTION_BOTH),
-                        CONF_NUM_TRAINS: max(1, min(5, int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS)))),
+                        CONF_NUM_TRAINS: max(1, min(20, int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS)))),
                     }
                     return await self.async_step_schedule()
 
@@ -124,7 +124,7 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
                 vol.Optional(CONF_NUM_TRAINS, default=DEFAULT_NUM_TRAINS): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=1, max=5, step=1, mode=selector.NumberSelectorMode.BOX)
+                    selector.NumberSelectorConfig(min=1, max=20, step=1, mode=selector.NumberSelectorMode.BOX)
                 ),
             }
         )
@@ -205,7 +205,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_NUM_TRAINS, default=int(current.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
                 ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=1, max=5, step=1, mode=selector.NumberSelectorMode.BOX)
+                    selector.NumberSelectorConfig(min=1, max=20, step=1, mode=selector.NumberSelectorMode.BOX)
                 ),
                 **_schedule_fields(current),
             }

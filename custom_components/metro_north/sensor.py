@@ -58,7 +58,7 @@ async def async_setup_entry(
     if direction not in (DIRECTION_BOTH, DIRECTION_INBOUND, DIRECTION_OUTBOUND):
         direction = DIRECTION_BOTH
 
-    num_trains = max(1, min(5, int(config.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))))
+    num_trains = max(1, min(20, int(config.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))))
 
     entities: list[SensorEntity] = []
     for station_name in selected:
@@ -121,9 +121,9 @@ def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
         ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
         ATTR_DELAY_MINUTES: t.get("delay_minutes", 0),
         "status": t.get("status", ""),
-        ATTR_DESTINATION: t.get("destination", ""),
         ATTR_ORIGIN: t.get("origin", ""),
-        ATTR_HEADSIGN: t.get("headsign", ""),
+        ATTR_DESTINATION: t.get("destination", ""),
+        ATTR_HEADSIGN: t.get("headsign") or t.get("destination", ""),
         ATTR_LINE: t.get("route_name", "Metro North"),
         ATTR_DIRECTION: "Inbound" if t.get("direction") == 1 else "Outbound",
         ATTR_TRIP_STOPS: trip_stops,
@@ -131,6 +131,8 @@ def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
 
 
 class _StationBase(CoordinatorEntity[MetroNorthCoordinator]):
+    _attr_has_entity_name = True
+
     def __init__(
         self,
         coordinator: MetroNorthCoordinator,
@@ -145,7 +147,7 @@ class _StationBase(CoordinatorEntity[MetroNorthCoordinator]):
     def device_info(self) -> dict[str, Any]:
         return {
             "identifiers": {(DOMAIN, f"station_{self._stop_id}")},
-            "name": f"Metro North – {self._station_name}",
+            "name": f"Metro North {self._station_name}",
             "manufacturer": "MTA Metro North",
             "model": "Station",
         }
@@ -171,8 +173,8 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         self._position = position
         self._direction = direction
         suffix = _direction_suffix(direction)
-        self._attr_unique_id = f"{DOMAIN}_train_{position}_{stop_id}_{direction}"
-        self._attr_name = f"Metro North {station_name}{suffix} Train {position}"
+        self._attr_unique_id = f"{DOMAIN}_train_{position}_{stop_id}"
+        self._attr_name = f"Train {position}{suffix}"
         self._attr_icon = "mdi:train"
 
     def _get_target(self) -> dict[str, Any] | None:
@@ -205,8 +207,8 @@ class UpcomingTrainsSensor(_StationBase, SensorEntity):
         super().__init__(coordinator, stop_id, station_name)
         self._direction = direction
         suffix = _direction_suffix(direction)
-        self._attr_unique_id = f"{DOMAIN}_upcoming_{stop_id}_{direction}"
-        self._attr_name = f"Metro North {station_name}{suffix} Upcoming Trains"
+        self._attr_unique_id = f"{DOMAIN}_upcoming_{stop_id}"
+        self._attr_name = f"Upcoming Trains{suffix}"
         self._attr_icon = "mdi:train-variant"
 
     @property

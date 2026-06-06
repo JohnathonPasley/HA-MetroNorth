@@ -7,7 +7,7 @@
         "data": {
           "stations": "Stations to monitor",
           "direction": "Train direction",
-          "num_trains": "Individual train sensors per station (1–5)"
+          "num_trains": "Individual train sensors per station (1–20)"
         }
       },
       "schedule": {
@@ -39,7 +39,7 @@
         "data": {
           "stations": "Stations to monitor",
           "direction": "Train direction",
-          "num_trains": "Individual train sensors per station (1–5)",
+          "num_trains": "Individual train sensors per station (1–20)",
           "peak_1_start": "Peak window 1 — start",
           "peak_1_end": "Peak window 1 — end",
           "peak_1_interval": "Peak window 1 — interval (s)",
