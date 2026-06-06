@@ -5,7 +5,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.util.slugify import slugify
+from homeassistant.util import slugify
 
 from .const import (
     CONF_DEFAULT_INTERVAL,
