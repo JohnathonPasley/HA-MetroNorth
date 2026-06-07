@@ -21,11 +21,13 @@ from .const import (
     ATTR_ESTIMATED_TIME,
     ATTR_HEADSIGN,
     ATTR_LINE,
+    ATTR_NEXT_STOP,
     ATTR_ORIGIN,
     ATTR_SCHEDULED_TIME,
     ATTR_SERVICE_ALERTS,
     ATTR_SERVICE_TYPE,
     ATTR_STOPS_REMAINING,
+    ATTR_STOPS_TO_STATION,
     ATTR_TRACK,
     ATTR_TRAIN_NUMBER,
     ATTR_TRIP_STOPS,
@@ -273,13 +275,13 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         attrs = _train_attrs(t)
         attrs[ATTR_SERVICE_TYPE] = self._resolve_service_type(t)
         attrs[ATTR_CURRENT_STOP] = t.get("current_stop", "")
+        attrs[ATTR_NEXT_STOP] = t.get("next_stop", "")
         attrs[ATTR_STOPS_REMAINING] = t.get("stops_remaining", 0)
-        # lat/lon from current stop so HA can show this sensor on the map
+        attrs[ATTR_STOPS_TO_STATION] = t.get("stops_to_station", 0)
         if t.get("latitude") is not None:
             attrs["latitude"] = t["latitude"]
         if t.get("longitude") is not None:
             attrs["longitude"] = t["longitude"]
-        attrs["diagnostic"] = t.get("_diagnostic", {})
         return attrs
 
 
@@ -359,6 +361,8 @@ class TrainDepartureStatusSensor(_StationBase, SensorEntity):
             ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
             ATTR_DELAY_MINUTES: t.get("delay_minutes", 0),
             ATTR_CURRENT_STOP: t.get("current_stop", ""),
+            ATTR_NEXT_STOP: t.get("next_stop", ""),
+            ATTR_STOPS_TO_STATION: t.get("stops_to_station", 0),
         }
 
 

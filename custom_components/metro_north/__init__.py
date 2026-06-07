@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import slugify
 
 from .const import (
@@ -114,6 +116,14 @@ def _build_peak_windows(data: dict) -> list[PeakWindow]:
     return windows
 
 
+async def _async_setup_zones(hass: HomeAssistant, gtfs_static) -> None:
+    """Create station zones; safe to call any time after HA has started."""
+    if not hass.data.get(DOMAIN, {}).get(_STATION_ZONES_KEY):
+        zone_ids = await _async_create_station_zones(hass, gtfs_static)
+        if zone_ids:
+            hass.data.setdefault(DOMAIN, {})[_STATION_ZONES_KEY] = zone_ids
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
@@ -159,12 +169,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         hass.services.async_register(DOMAIN, "update_gtfs", _handle_update_gtfs)
 
-    # Create station zones once (shared across all config entries)
-    if _STATION_ZONES_KEY not in hass.data[DOMAIN]:
-        hass.data[DOMAIN][_STATION_ZONES_KEY] = set()
-        if coordinator._gtfs.is_loaded():
-            zone_ids = await _async_create_station_zones(hass, coordinator._gtfs)
-            hass.data[DOMAIN][_STATION_ZONES_KEY] = zone_ids
+    # Create station zones once (shared across all config entries).
+    # Defer until HA is fully started because zone.create service may not be
+    # available during config entry setup on first boot.
+    if not hass.data[DOMAIN].get(_STATION_ZONES_KEY):
+        if hass.is_running:
+            await _async_setup_zones(hass, coordinator._gtfs)
+        else:
+            @callback
+            def _on_ha_started(_event: Any) -> None:
+                hass.async_create_task(_async_setup_zones(hass, coordinator._gtfs))
+
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_ha_started)
 
     return True
 
