@@ -25,6 +25,7 @@ from .const import (
     CONF_PEAK_2_END,
     CONF_PEAK_2_INTERVAL,
     CONF_PEAK_2_START,
+    CONF_ROUTES,
     CONF_STATIONS,
     DEFAULT_NUM_TRAINS,
     DEFAULT_OFF_PEAK_INTERVAL,
@@ -41,6 +42,7 @@ from .const import (
     FALLBACK_STATIONS,
     GTFS_RT_URL,
     MAX_INTERVAL,
+    METRO_NORTH_ROUTE_OPTIONS,
     MIN_INTERVAL,
 )
 from .gtfs_static import GTFSStaticManager
@@ -116,6 +118,7 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_STATIONS: selected,
                         CONF_DIRECTION: user_input.get(CONF_DIRECTION, DIRECTION_BOTH),
                         CONF_NUM_TRAINS: max(1, min(20, int(user_input.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS)))),
+                        CONF_ROUTES: user_input.get(CONF_ROUTES, []),
                     }
                     return await self.async_step_schedule()
 
@@ -139,6 +142,13 @@ class MetroNorthConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional(CONF_NUM_TRAINS, default=DEFAULT_NUM_TRAINS): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=20, step=1, mode=selector.NumberSelectorMode.BOX)
+                ),
+                vol.Optional(CONF_ROUTES, default=[]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=METRO_NORTH_ROUTE_OPTIONS,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
                 ),
             }
         )
@@ -220,6 +230,16 @@ class OptionsFlow(config_entries.OptionsFlow):
                     CONF_NUM_TRAINS, default=int(current.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=20, step=1, mode=selector.NumberSelectorMode.BOX)
+                ),
+                vol.Optional(
+                    CONF_ROUTES,
+                    default=current.get(CONF_ROUTES, []),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=METRO_NORTH_ROUTE_OPTIONS,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
                 ),
                 vol.Optional(
                     CONF_LOCAL_STOP_INDICATORS,

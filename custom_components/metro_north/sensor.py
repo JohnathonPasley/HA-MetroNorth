@@ -15,6 +15,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     ATTR_CURRENT_STOP,
     ATTR_DELAY_MINUTES,
+    ATTR_DEPARTURE_STATUS,
     ATTR_DESTINATION,
     ATTR_DIRECTION,
     ATTR_ESTIMATED_TIME,
@@ -32,6 +33,7 @@ from .const import (
     CONF_DIRECTION,
     CONF_LOCAL_STOP_INDICATORS,
     CONF_NUM_TRAINS,
+    CONF_ROUTES,
     CONF_STATIONS,
     DEFAULT_NUM_TRAINS,
     DIRECTION_BOTH,
@@ -72,6 +74,10 @@ async def async_setup_entry(
         if raw_indicators else set()
     )
 
+    routes: list[str] = config.get(CONF_ROUTES, [])
+    if isinstance(routes, str):
+        routes = [routes] if routes else []
+
     entities: list[SensorEntity] = []
     expected_unique_ids: set[str] = set()
 
@@ -84,11 +90,11 @@ async def async_setup_entry(
             uid = f"{DOMAIN}_train_{position}_{stop_id}"
             expected_unique_ids.add(uid)
             entities.append(
-                TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction, local_indicators)
+                TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction, local_indicators, routes)
             )
         expected_unique_ids.add(f"{DOMAIN}_upcoming_{stop_id}")
         expected_unique_ids.add(f"{DOMAIN}_alerts_{stop_id}")
-        entities.append(UpcomingTrainsSensor(coordinator, stop_id, station_name, direction))
+        entities.append(UpcomingTrainsSensor(coordinator, stop_id, station_name, direction, routes))
         entities.append(ServiceAlertSensor(coordinator, stop_id, station_name))
 
     # Remove stale entities that no longer match the current config
@@ -108,6 +114,16 @@ def _resolve_stop_id(coordinator: MetroNorthCoordinator, name: str) -> str | Non
         if sid:
             return sid
     return STATION_NAME_TO_ID.get(name)
+
+
+def _filter_by_routes(trains: list[dict], routes: list[str]) -> list[dict]:
+    """Keep only trains whose route_name contains one of the configured route fragments."""
+    if not routes:
+        return trains
+    return [
+        t for t in trains
+        if any(r.lower() in t.get("route_name", "").lower() for r in routes)
+    ]
 
 
 def _filtered_trains(trains: list[dict], direction: str) -> list[dict]:
@@ -136,6 +152,7 @@ def _train_attrs_summary(t: dict[str, Any]) -> dict[str, Any]:
         ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
         ATTR_DELAY_MINUTES: t.get("delay_minutes", 0),
         "status": t.get("status", ""),
+        ATTR_DEPARTURE_STATUS: t.get("departure_status", ""),
         ATTR_ORIGIN: t.get("origin", ""),
         ATTR_DESTINATION: t.get("destination", ""),
         ATTR_HEADSIGN: t.get("headsign") or t.get("destination", ""),
@@ -163,6 +180,7 @@ def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
         ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
         ATTR_DELAY_MINUTES: t.get("delay_minutes", 0),
         "status": t.get("status", ""),
+        ATTR_DEPARTURE_STATUS: t.get("departure_status", ""),
         ATTR_ORIGIN: t.get("origin", ""),
         ATTR_DESTINATION: t.get("destination", ""),
         ATTR_HEADSIGN: t.get("headsign") or t.get("destination", ""),
@@ -211,11 +229,13 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         position: int,
         direction: str,
         local_indicators: set[str] | None = None,
+        routes: list[str] | None = None,
     ) -> None:
         super().__init__(coordinator, stop_id, station_name)
         self._position = position
         self._direction = direction
         self._local_indicators: set[str] = local_indicators or set()
+        self._routes: list[str] = routes or []
         suffix = _direction_suffix(direction)
         self._attr_unique_id = f"{DOMAIN}_train_{position}_{stop_id}"
         self._attr_name = f"Train {position}{suffix}"
@@ -223,6 +243,7 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
 
     def _get_target(self) -> dict[str, Any] | None:
         trains = _filtered_trains(self._get_trains(), self._direction)
+        trains = _filter_by_routes(trains, self._routes)
         if len(trains) >= self._position:
             return trains[self._position - 1]
         return None
@@ -248,6 +269,11 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         attrs[ATTR_SERVICE_TYPE] = self._resolve_service_type(t)
         attrs[ATTR_CURRENT_STOP] = t.get("current_stop", "")
         attrs[ATTR_STOPS_REMAINING] = t.get("stops_remaining", 0)
+        # lat/lon from current stop so HA can show this sensor on the map
+        if t.get("latitude") is not None:
+            attrs["latitude"] = t["latitude"]
+        if t.get("longitude") is not None:
+            attrs["longitude"] = t["longitude"]
         attrs["diagnostic"] = t.get("_diagnostic", {})
         return attrs
 
@@ -261,22 +287,27 @@ class UpcomingTrainsSensor(_StationBase, SensorEntity):
         stop_id: str,
         station_name: str,
         direction: str,
+        routes: list[str] | None = None,
     ) -> None:
         super().__init__(coordinator, stop_id, station_name)
         self._direction = direction
+        self._routes: list[str] = routes or []
         suffix = _direction_suffix(direction)
         self._attr_unique_id = f"{DOMAIN}_upcoming_{stop_id}"
         self._attr_name = f"Upcoming Trains{suffix}"
         self._attr_icon = "mdi:train-variant"
 
+    def _get_filtered(self) -> list[dict]:
+        trains = _filtered_trains(self._get_trains(), self._direction)
+        return _filter_by_routes(trains, self._routes)[:MAX_UPCOMING]
+
     @property
     def native_value(self) -> int:
-        return len(_filtered_trains(self._get_trains(), self._direction)[:MAX_UPCOMING])
+        return len(self._get_filtered())
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        trains = _filtered_trains(self._get_trains(), self._direction)[:MAX_UPCOMING]
-        return {ATTR_UPCOMING_TRAINS: [_train_attrs_summary(t) for t in trains]}
+        return {ATTR_UPCOMING_TRAINS: [_train_attrs_summary(t) for t in self._get_filtered()]}
 
 
 class ServiceAlertSensor(_StationBase, SensorEntity):

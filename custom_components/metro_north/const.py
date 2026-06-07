@@ -67,8 +67,17 @@ ATTR_SERVICE_ALERTS = "service_alerts"
 ATTR_CURRENT_STOP = "current_stop"
 ATTR_STOPS_REMAINING = "stops_remaining"
 ATTR_SERVICE_TYPE = "service_type"
+ATTR_DEPARTURE_STATUS = "departure_status"
 
 CONF_LOCAL_STOP_INDICATORS = "local_stop_indicators"
+CONF_ROUTES = "routes"
+
+# Known Metro North route name fragments for filtering
+METRO_NORTH_ROUTE_OPTIONS = [
+    {"value": "Harlem", "label": "Harlem Line"},
+    {"value": "Hudson", "label": "Hudson Line"},
+    {"value": "New Haven", "label": "New Haven Line"},
+]
 
 # Train status labels
 TRAIN_STATUS_ON_TIME = "On Time"
