@@ -9,8 +9,15 @@ A custom Home Assistant integration that delivers real-time train data for MTA M
 - **Station sensors** — monitor one or more Metro North stations simultaneously
 - **Individual train sensors (Train 1–N)** — dedicated sensors for each upcoming train slot; the state is the estimated departure time
 - **Direction filter** — show all trains, inbound only (toward Grand Central), or outbound only (away from Grand Central)
+- **Route filter** — limit sensors to a specific line (Harlem, Hudson, or New Haven)
+- **Service type classification** — trains are automatically classified as Local, Express, or Super Express based on their stop pattern
+- **En-route positioning** — sensors report the train's current or next stop as it moves between stations
+- **stops_to_station** — attribute reporting how many stops remain until the monitored station
+- **Departure status sensor** — human-readable departure status (e.g., "Departing", "Scheduled to Depart Soon", "Scheduled Departure", or "Running N min Early")
+- **Station zones** — each monitored station creates a Home Assistant zone at the station's coordinates
+- **Service alerts** — active MTA service alerts are surfaced on affected station and route sensors
 - **Upcoming Trains sensor** — reports the count of upcoming trains and includes a full attribute list of all departures
-- **Vehicle map trackers** — GPS device trackers for active trains, pinned to the current stop and displayed on the Home Assistant map with line-colored icons
+- **Vehicle map trackers** — GPS device trackers for active trains, pinned to the current stop and displayed on the Home Assistant map with line-colored icons; can be toggled on/off in Options
 - **Auto-cleanup of stale trains** — trackers for trains that are no longer active are automatically removed
 - **Line-colored map pins** — Harlem Line trains appear in blue, Hudson Line in green, New Haven Line in red
 - **Peak / off-peak adaptive polling** — faster refresh during configurable morning and evening peak windows, slower polling at all other times
@@ -40,6 +47,7 @@ Setup happens in two steps.
 | **Stations to monitor** | Select one or more Metro North stations from the dropdown. Station names are loaded from the MTA static GTFS feed; a built-in fallback list is used if the feed is unavailable at setup time. |
 | **Train direction** | Filter trains by direction: *Both directions*, *Inbound only (toward Grand Central)*, or *Outbound only (from Grand Central)*. |
 | **Individual train sensors per station (1–20)** | How many numbered Train sensors to create per station (Train 1, Train 2, …). Each sensor's state is the estimated departure time for that departure slot. |
+| **Route filter** | Optionally restrict sensors to one or more lines (Harlem, Hudson, New Haven). Leave empty to show all lines. |
 
 ### Step 2 — Poll Schedule
 
@@ -78,6 +86,7 @@ One device tracker per active train vehicle detected in the MTA GTFS-RT vehicles
 - **State** — `home` (active) or `not_home` (stale / removed).
 - **Attributes** — latitude, longitude, speed, bearing, occupancy status, and train/trip details.
 - Tracker entities are automatically removed when a train is no longer active in the feed.
+- Vehicle trackers can be disabled entirely via the **Show vehicle trackers** toggle in Options.
 
 ---
 
@@ -96,6 +105,12 @@ One device tracker per active train vehicle detected in the MTA GTFS-RT vehicles
 | `headsign` | Displayed headsign for the trip |
 | `line` | Route name (e.g., Harlem, Hudson, New Haven) |
 | `direction` | `Inbound` (toward Grand Central) or `Outbound` (away from Grand Central) |
+| `service_type` | Service classification: `Local`, `Express`, or `Super Express` |
+| `current_stop` | Name of the stop the train is currently at or departing from (e.g., `En Route to White Plains`) |
+| `next_stop` | Name of the next scheduled stop |
+| `stops_remaining` | Number of stops remaining in the trip |
+| `stops_to_station` | Number of stops between the train's current position and this monitored station |
+| `departure_status` | Human-readable departure status (e.g., `Scheduled Departure`, `Scheduled to Depart Soon`, `Departing`, `Running N min Early`) |
 | `trip_stops` | List of all stops on the trip with `stop_name`, `arrival`, and `departure` times (up to 50 stops) |
 
 ---
@@ -130,10 +145,14 @@ The integration supports all Metro North Railroad stations across all three main
 
 - **Harlem Line** — Grand Central Terminal to Wassaic
 - **Hudson Line** — Grand Central Terminal to Poughkeepsie
-- **New Haven Line** — Grand Central Terminal to New Haven, with Port Jefferson and Oyster Bay branches
+- **New Haven Line** — Grand Central Terminal to New Haven, with New Canaan, Danbury, and Waterbury branches
 
 Station names are sourced from the MTA official GTFS static data, so the full station list stays current with any MTA schedule changes.
 
 ### API Key
 
 No API key is required. As of 2024, the MTA removed the API key requirement for all real-time GTFS feeds. The integration connects directly to the feed with no registration or authentication.
+
+---
+
+> This integration was developed with [Claude](https://claude.ai) (Anthropic).

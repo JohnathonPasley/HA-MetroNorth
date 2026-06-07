@@ -23,6 +23,8 @@ import logging
 _LOGGER = logging.getLogger(__name__)
 
 _MTA_EXT_FIELD = 1005  # extension field number on both StopTimeUpdate and CarriageDetails
+_MAX_STR_LEN = 256   # cap on any single extension string to prevent large allocations
+_MAX_VARINT_SHIFT = 63  # protobuf varints are at most 64-bit
 
 
 def diagnose_stop_time_update(stu: object) -> dict:
@@ -125,6 +127,8 @@ def _parse_raw_unknown_fields(data: bytes) -> tuple[list[int], str, str]:
             field_numbers.append(field_num)
             if wire_type == 2:  # length-delimited
                 length, pos = _varint(data, pos)
+                if length < 0 or pos + length > n:
+                    break
                 value_bytes = data[pos: pos + length]
                 pos += length
                 if field_num == _MTA_EXT_FIELD:
@@ -159,8 +163,11 @@ def _parse_track_and_status(data: bytes) -> tuple[str, str]:
             wire_type = tag & 0x7
             if wire_type == 2:  # length-delimited (string / bytes)
                 length, pos = _varint(data, pos)
-                value = data[pos : pos + length].decode("utf-8", errors="replace")
+                if length < 0 or pos + length > n:
+                    break
+                raw = data[pos : pos + length]
                 pos += length
+                value = raw[:_MAX_STR_LEN].decode("utf-8", errors="replace")
                 if field_num == 1:
                     track = value
                 elif field_num == 2:
@@ -209,12 +216,16 @@ def _varint(data: bytes, pos: int) -> tuple[int, int]:
     """Decode a protobuf varint; return (value, new_pos)."""
     result = shift = 0
     while True:
+        if pos >= len(data):
+            raise ValueError("Truncated varint")
         b = data[pos]
         pos += 1
         result |= (b & 0x7F) << shift
         if not (b & 0x80):
             return result, pos
         shift += 7
+        if shift > _MAX_VARINT_SHIFT:
+            raise ValueError("Varint overflow")
 
 
 def _skip(data: bytes, pos: int, wire_type: int) -> int:

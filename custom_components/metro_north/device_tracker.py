@@ -20,6 +20,8 @@ from .const import (
     ATTR_TRAIN_NUMBER,
     ATTR_TRIP_STOPS,
     ATTR_VEHICLE_ID,
+    CONF_SHOW_VEHICLES,
+    DEFAULT_SHOW_VEHICLES,
     DOMAIN,
 )
 from .coordinator import MetroNorthCoordinator
@@ -68,6 +70,9 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    config = {**entry.data, **entry.options}
+    if not config.get(CONF_SHOW_VEHICLES, DEFAULT_SHOW_VEHICLES):
+        return
     coordinator: MetroNorthCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     seen: set[str] = set()

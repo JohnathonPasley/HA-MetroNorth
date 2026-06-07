@@ -61,7 +61,7 @@ _ALERT_EFFECT = {
 # Service type classification: stop names that indicate local service
 _LOCAL_INDICATOR_STOPS = frozenset({"Woodlawn", "Bronxville", "Tuckahoe"})
 # If a train doesn't stop here it's Super Express (Harlem Line specific)
-_SUPER_EXPRESS_STOP = "harlem-125th"  # case-insensitive substring match
+_SUPER_EXPRESS_STOP = "harlem-125"  # matches "Harlem-125 St" from actual GTFS stops.txt
 
 
 def _alert_enum_name(val: int, mapping: dict) -> str:
@@ -101,13 +101,18 @@ def _train_status(delay_minutes: int) -> str:
     return "On Time"
 
 
+# Trains terminating at any of these stations are heading toward Grand Central = Inbound.
+# Yankees-E 153 St is a Hudson Line stub terminal south of other Hudson stops.
+_INBOUND_TERMINALS = ("grand central", "yankees", "harlem-125 st")
+
+
 def _infer_direction(destination: str) -> int:
     """Infer Metro North direction from destination name.
 
     direction_id in the RT feed defaults to 0 for all trains and is unreliable.
     Grand Central Terminal is the terminal for all inbound Metro North trains.
     """
-    return 0 if "grand central" in destination.lower() else 1
+    return 0 if any(p in destination.lower() for p in _INBOUND_TERMINALS) else 1
 
 
 class MetroNorthCoordinator(DataUpdateCoordinator):

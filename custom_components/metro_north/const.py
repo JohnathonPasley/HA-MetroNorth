@@ -15,6 +15,8 @@ DIRECTION_OUTBOUND = "outbound"  # away from Grand Central Terminal
 
 # Defaults
 DEFAULT_NUM_TRAINS = 3
+CONF_SHOW_VEHICLES = "show_vehicles"
+DEFAULT_SHOW_VEHICLES = True
 CONF_PEAK_1_START = "peak_1_start"
 CONF_PEAK_1_END = "peak_1_end"
 CONF_PEAK_1_INTERVAL = "peak_1_interval"

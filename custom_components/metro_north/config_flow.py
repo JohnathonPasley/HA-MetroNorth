@@ -25,8 +25,10 @@ from .const import (
     CONF_PEAK_2_INTERVAL,
     CONF_PEAK_2_START,
     CONF_ROUTES,
+    CONF_SHOW_VEHICLES,
     CONF_STATIONS,
     DEFAULT_NUM_TRAINS,
+    DEFAULT_SHOW_VEHICLES,
     DEFAULT_OFF_PEAK_INTERVAL,
     DEFAULT_PEAK_1_END,
     DEFAULT_PEAK_1_START,
@@ -245,6 +247,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                         mode=selector.SelectSelectorMode.LIST,
                     )
                 ),
+                vol.Optional(
+                    CONF_SHOW_VEHICLES,
+                    default=bool(current.get(CONF_SHOW_VEHICLES, DEFAULT_SHOW_VEHICLES)),
+                ): selector.BooleanSelector(),
                 **_schedule_fields(current),
             }
         )
