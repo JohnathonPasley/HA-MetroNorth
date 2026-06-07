@@ -431,7 +431,9 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             "active_period": human_period,
         }
 
-        # Index by each informed entity's stop_id and/or route_id
+        # Index by each informed entity's stop_id and/or route_id.
+        # Agency-only entities (no stop_id, no route_id) go to "_agency".
+        indexed_keys: set[str] = set()
         for ie in alert.informed_entity:
             mercury_sel = extract_mercury_entity_selector(ie)
             sort_order = mercury_sel.get("sort_order", "")
@@ -441,14 +443,22 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 keys.append(ie.stop_id)
             if ie.route_id:
                 keys.append(f"route:{ie.route_id}")
+            if not keys:
+                keys.append("_agency")
 
             for key in keys:
+                indexed_keys.add(key)
                 if key not in alerts:
                     alerts[key] = []
                 entry = {**alert_dict}
                 if sort_order:
                     entry["priority"] = sort_order
                 alerts[key].append(entry)
+
+        # Always add every alert to "_all" for sensors that want the full list
+        if "_all" not in alerts:
+            alerts["_all"] = []
+        alerts["_all"].append(alert_dict)
 
     def _synthesize_vehicle(self, tu: Any, entity_id: str, now_ts: float) -> dict | None:
         """Build an approximate vehicle from TripUpdate + static GTFS stop coordinates.
