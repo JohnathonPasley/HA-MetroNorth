@@ -111,11 +111,11 @@ def _resolve_stop_id(coordinator: MetroNorthCoordinator, name: str) -> str | Non
 
 
 def _filtered_trains(trains: list[dict], direction: str) -> list[dict]:
-    """Filter by GTFS direction_id: 1 = inbound (Grand Central), 0 = outbound."""
+    """Filter by GTFS direction_id: Metro North 0 = Inbound (Grand Central), 1 = Outbound."""
     if direction == DIRECTION_INBOUND:
-        return [t for t in trains if t.get("direction") == 1]
-    if direction == DIRECTION_OUTBOUND:
         return [t for t in trains if t.get("direction") == 0]
+    if direction == DIRECTION_OUTBOUND:
+        return [t for t in trains if t.get("direction") == 1]
     return trains
 
 
@@ -140,7 +140,7 @@ def _train_attrs_summary(t: dict[str, Any]) -> dict[str, Any]:
         ATTR_DESTINATION: t.get("destination", ""),
         ATTR_HEADSIGN: t.get("headsign") or t.get("destination", ""),
         ATTR_LINE: t.get("route_name", "Metro North"),
-        ATTR_DIRECTION: "Inbound" if t.get("direction") == 1 else "Outbound",
+        ATTR_DIRECTION: "Inbound" if t.get("direction") == 0 else "Outbound",
     }
 
 
@@ -167,7 +167,7 @@ def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
         ATTR_DESTINATION: t.get("destination", ""),
         ATTR_HEADSIGN: t.get("headsign") or t.get("destination", ""),
         ATTR_LINE: t.get("route_name", "Metro North"),
-        ATTR_DIRECTION: "Inbound" if t.get("direction") == 1 else "Outbound",
+        ATTR_DIRECTION: "Inbound" if t.get("direction") == 0 else "Outbound",
         ATTR_TRIP_STOPS: trip_stops,
     }
 

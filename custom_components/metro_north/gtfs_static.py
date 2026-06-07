@@ -52,7 +52,8 @@ class TripInfo:
 
     @property
     def direction_text(self) -> str:
-        return "Inbound" if self.direction_id == 1 else "Outbound"
+        # Metro North: direction_id 0 = Inbound (toward Grand Central), 1 = Outbound
+        return "Inbound" if self.direction_id == 0 else "Outbound"
 
 
 class GTFSStaticData:
@@ -61,6 +62,7 @@ class GTFSStaticData:
         self.trips: dict[str, TripInfo] = {}
         self.stop_times: dict[str, list[StopTimeInfo]] = {}
         self.routes: dict[str, str] = {}
+        self.short_name_index: dict[str, str] = {}  # trip_short_name → trip_id
         self.last_updated: datetime | None = None
 
 
@@ -139,6 +141,14 @@ class GTFSStaticManager:
                             except (KeyError, ValueError):
                                 pass
 
+                # Build short_name index for cross-referencing RT trip_ids to static trips.
+                # Per MTA: RT trip.trip_id matches static trip_short_name (different systems).
+                data.short_name_index = {
+                    info.short_name: tid
+                    for tid, info in data.trips.items()
+                    if info.short_name
+                }
+
                 active_stop_ids: set[str] = set()
                 if "stop_times.txt" in names:
                     with zf.open("stop_times.txt") as f:
@@ -199,6 +209,20 @@ class GTFSStaticManager:
 
     def get_all_stops(self) -> dict[str, StopInfo]:
         return self.data.stops
+
+    def resolve_trip_id(self, rt_trip_id: str) -> str:
+        """Resolve an RT trip_id to the static GTFS trip_id.
+
+        MTA uses different ID systems for the RT feed and static GTFS.
+        RT trip.trip_id should match static trip_short_name; try that
+        cross-reference when a direct trip_id lookup fails.
+        """
+        if rt_trip_id in self.data.trips:
+            return rt_trip_id
+        resolved = self.data.short_name_index.get(rt_trip_id)
+        if resolved:
+            return resolved
+        return rt_trip_id
 
     def get_trip_stops(self, trip_id: str) -> list[StopTimeInfo]:
         return self.data.stop_times.get(trip_id, [])
