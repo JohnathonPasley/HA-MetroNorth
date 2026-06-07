@@ -267,15 +267,39 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             delay_minutes = round(delay_seconds / 60)
 
             # Pull track and official MTA status from MTARR extension (field 1005).
-            # Fall back to vehicle.label for track when the extension is absent.
             ext_track, mta_status = extract_stop_time_update_ext(stu)
-            track = _sanitize(ext_track or vehicle_label, _MAX_TRACK_LEN)
+            # Fallback: look up track from static GTFS stop_times if RT extension absent
+            static_track = ""
+            if not ext_track and static_stops:
+                static_track = next(
+                    (s.track for s in static_stops if s.stop_id == stop_id and s.track),
+                    ""
+                )
+            track = _sanitize(ext_track or static_track or vehicle_label, _MAX_TRACK_LEN)
             status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
 
-            current_stop, stops_remaining = self._estimate_current_stop(
+            # Departure status based on minutes until this train leaves the station
+            minutes_until = (estimated_ts - now_ts) / 60
+            if minutes_until <= 1:
+                departure_status = "Stand Clear of the Closing Doors Please, Departing"
+            elif minutes_until <= 11:
+                departure_status = "Scheduled to Depart Soon"
+            else:
+                departure_status = "Scheduled Departure"
+
+            current_stop, current_stop_id, stops_remaining = self._estimate_current_stop(
                 tu.stop_time_update, now_ts
             )
             service_type = self._classify_service_type(static_stops)
+
+            # Lat/lon for map display — use current stop coordinates from GTFS
+            current_lat: float | None = None
+            current_lon: float | None = None
+            if current_stop_id and self._gtfs.is_loaded():
+                _si = self._gtfs.data.stops.get(current_stop_id)
+                if _si and not (_si.lat == 0.0 and _si.lon == 0.0):
+                    current_lat = _si.lat
+                    current_lon = _si.lon
 
             stops[stop_id].append(
                 {
@@ -300,8 +324,12 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "destination": destination,
                     "origin": origin,
                     "current_stop": current_stop,
+                    "current_stop_id": current_stop_id,
                     "stops_remaining": stops_remaining,
                     "service_type": service_type,
+                    "departure_status": departure_status,
+                    "latitude": current_lat,
+                    "longitude": current_lon,
                     "all_stop_names": [s.stop_name for s in static_stops],
                     "trip_stops": (
                         self._build_upcoming_stops(static_stops, stu.stop_sequence)
@@ -654,9 +682,10 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
     def _estimate_current_stop(
         self, stop_time_updates: Any, now_ts: float
-    ) -> tuple[str, int]:
-        """Return (last_departed_stop_name, upcoming_stop_count) from RT data."""
+    ) -> tuple[str, str, int]:
+        """Return (stop_name, stop_id, upcoming_stop_count) for the last departed stop."""
         current_stop = ""
+        current_stop_id = ""
         stops_remaining = 0
         for stu in sorted(stop_time_updates, key=lambda s: s.stop_sequence):
             dep_ts = 0
@@ -665,6 +694,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             elif stu.HasField("arrival") and stu.arrival.time:
                 dep_ts = stu.arrival.time + (stu.arrival.delay or 0)
             if dep_ts and dep_ts <= now_ts:
+                current_stop_id = stu.stop_id
                 current_stop = (
                     self._gtfs.get_stop_name(stu.stop_id)
                     if self._gtfs.is_loaded()
@@ -672,7 +702,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 )
             elif dep_ts:
                 stops_remaining += 1
-        return current_stop, stops_remaining
+        return current_stop, current_stop_id, stops_remaining
 
     @staticmethod
     def _classify_service_type(static_stops: list) -> str:
