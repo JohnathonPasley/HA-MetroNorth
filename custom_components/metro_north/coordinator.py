@@ -290,7 +290,9 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
 
             minutes_until = (estimated_ts - now_ts) / 60
-            if minutes_until <= 1:
+            if delay_minutes < -1:
+                departure_status = f"Running {abs(delay_minutes)} min Early"
+            elif minutes_until <= 1:
                 departure_status = "Stand Clear of the Closing Doors Please, Departing"
             elif minutes_until <= 11:
                 departure_status = "Scheduled to Depart Soon"

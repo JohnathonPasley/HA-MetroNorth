@@ -33,7 +33,6 @@ from .const import (
     ATTR_TRIP_STOPS,
     ATTR_UPCOMING_TRAINS,
     CONF_DIRECTION,
-    CONF_LOCAL_STOP_INDICATORS,
     CONF_NUM_TRAINS,
     CONF_ROUTES,
     CONF_STATIONS,
@@ -70,12 +69,6 @@ async def async_setup_entry(
 
     num_trains = max(1, min(20, int(config.get(CONF_NUM_TRAINS, DEFAULT_NUM_TRAINS))))
 
-    raw_indicators = config.get(CONF_LOCAL_STOP_INDICATORS, "")
-    local_indicators: set[str] = (
-        {s.strip() for s in raw_indicators.split(",") if s.strip()}
-        if raw_indicators else set()
-    )
-
     routes: list[str] = config.get(CONF_ROUTES, [])
     if isinstance(routes, str):
         routes = [routes] if routes else []
@@ -92,7 +85,7 @@ async def async_setup_entry(
             uid = f"{DOMAIN}_train_{position}_{stop_id}"
             expected_unique_ids.add(uid)
             entities.append(
-                TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction, local_indicators, routes)
+                TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction, routes)
             )
             dep_uid = f"{DOMAIN}_departure_status_{position}_{stop_id}"
             expected_unique_ids.add(dep_uid)
@@ -235,13 +228,11 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         station_name: str,
         position: int,
         direction: str,
-        local_indicators: set[str] | None = None,
         routes: list[str] | None = None,
     ) -> None:
         super().__init__(coordinator, stop_id, station_name)
         self._position = position
         self._direction = direction
-        self._local_indicators: set[str] = local_indicators or set()
         self._routes: list[str] = routes or []
         suffix = _direction_suffix(direction)
         self._attr_unique_id = f"{DOMAIN}_train_{position}_{stop_id}"
@@ -255,13 +246,6 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
             return trains[self._position - 1]
         return None
 
-    def _resolve_service_type(self, t: dict[str, Any]) -> str:
-        """Override heuristic with user-configured local indicator stops."""
-        if not self._local_indicators:
-            return t.get("service_type", "")
-        all_stops = set(t.get("all_stop_names", []))
-        return "Local" if all_stops & self._local_indicators else "Express"
-
     @property
     def native_value(self) -> str | None:
         t = self._get_target()
@@ -273,7 +257,7 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
         if not t:
             return {}
         attrs = _train_attrs(t)
-        attrs[ATTR_SERVICE_TYPE] = self._resolve_service_type(t)
+        attrs[ATTR_SERVICE_TYPE] = t.get("service_type", "")
         attrs[ATTR_CURRENT_STOP] = t.get("current_stop", "")
         attrs[ATTR_NEXT_STOP] = t.get("next_stop", "")
         attrs[ATTR_STOPS_REMAINING] = t.get("stops_remaining", 0)

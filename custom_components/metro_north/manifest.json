@@ -1,7 +1,7 @@
 {
   "domain": "metro_north",
   "name": "MTA Metro North",
-  "version": "1.14.1",
+  "version": "1.14.2",
   "requirements": [
     "gtfs-realtime-bindings==1.0.0",
     "protobuf>=4.21.0"

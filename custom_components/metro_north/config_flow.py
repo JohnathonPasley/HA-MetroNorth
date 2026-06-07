@@ -15,7 +15,6 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_DEFAULT_INTERVAL,
     CONF_DIRECTION,
-    CONF_LOCAL_STOP_INDICATORS,
     CONF_NUM_TRAINS,
     CONF_PEAK_1_DAYS,
     CONF_PEAK_1_END,
@@ -200,7 +199,12 @@ class OptionsFlow(config_entries.OptionsFlow):
                 pass
 
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Save options then force an immediate reload so new settings take effect.
+            result = self.async_create_entry(title="", data=user_input)
+            self.hass.async_create_task(
+                self.hass.config_entries.async_reload(self._config_entry.entry_id)
+            )
+            return result
 
         current = {**self._config_entry.data, **self._config_entry.options}
         station_options = _build_station_options(self._gtfs)
@@ -240,12 +244,6 @@ class OptionsFlow(config_entries.OptionsFlow):
                         multiple=True,
                         mode=selector.SelectSelectorMode.LIST,
                     )
-                ),
-                vol.Optional(
-                    CONF_LOCAL_STOP_INDICATORS,
-                    default=current.get(CONF_LOCAL_STOP_INDICATORS, ""),
-                ): selector.TextSelector(
-                    selector.TextSelectorConfig(multiline=False)
                 ),
                 **_schedule_fields(current),
             }
