@@ -379,7 +379,11 @@ class ServiceAlertSensor(_StationBase, SensorEntity):
     def _get_alerts(self) -> list[dict]:
         if self.coordinator.data is None:
             return []
-        return self.coordinator.data.get("service_alerts", {}).get(self._stop_id, [])
+        alerts = self.coordinator.data.get("service_alerts", {})
+        # "_all" contains every alert (agency-wide, route-level, stop-specific).
+        # Metro North alerts are almost always network or route-wide with no stop_id,
+        # so falling back to "_all" is the correct behavior for a single-railroad feed.
+        return alerts.get("_all") or alerts.get(self._stop_id, [])
 
     @property
     def native_value(self) -> int:
