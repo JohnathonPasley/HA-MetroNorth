@@ -19,7 +19,7 @@ from .const import (
     GTFS_RT_VEHICLES_URL,
 )
 from .gtfs_static import GTFSStaticManager
-from .mta_extensions import diagnose_stop_time_update, extract_stop_time_update_ext
+from .mta_extensions import extract_stop_time_update_ext
 from .mta_mercury import extract_mercury_alert, extract_mercury_entity_selector, get_translated_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +56,12 @@ _ALERT_EFFECT = {
     10: "No Effect",
     11: "Accessibility Issue",
 }
+
+
+# Service type classification: stop names that indicate local service
+_LOCAL_INDICATOR_STOPS = frozenset({"Woodlawn", "Bronxville", "Tuckahoe"})
+# If a train doesn't stop here it's Super Express (Harlem Line specific)
+_SUPER_EXPRESS_STOP = "harlem-125th"  # case-insensitive substring match
 
 
 def _alert_enum_name(val: int, mapping: dict) -> str:
@@ -225,22 +231,27 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         route_id = tu.trip.route_id
         vehicle_label = tu.vehicle.label if tu.HasField("vehicle") else ""
 
-        # Resolve RT trip_id to static GTFS trip_id.
-        # Per MTA: RT trip.trip_id matches static trip_short_name (not trip_id).
         static_trip_id = self._gtfs.resolve_trip_id(rt_trip_id) if self._gtfs.is_loaded() else rt_trip_id
-
         static_stops = self._gtfs.get_trip_stops(static_trip_id) if self._gtfs.is_loaded() else []
 
-        # Resolve terminus once for the whole trip (used for direction inference)
         destination = self._resolve_terminus(tu, static_stops, last=True)
         origin = self._resolve_terminus(tu, static_stops, last=False)
-
-        # Infer direction from destination — RT direction_id defaults to 0 for all trains
         direction = _infer_direction(destination)
-
-        # entity.id = human-readable train number per MTA developer docs.
-        # Fall back to vehicle label, then rt_trip_id.
         train_number = entity_id or vehicle_label or rt_trip_id
+
+        # Compute position once per trip — same for all stops
+        position = self._estimate_current_stop(tu.stop_time_update, now_ts)
+        service_type = self._classify_service_type(static_stops)
+
+        # Pre-scan all stop_time_updates for MTARR track extension.
+        # Track is typically only present at departure stops (Grand Central),
+        # so cache it and reuse for every stop of the same trip.
+        trip_track = ""
+        for _stu in tu.stop_time_update:
+            t, _ = extract_stop_time_update_ext(_stu)
+            if t:
+                trip_track = t
+                break
 
         for stu in tu.stop_time_update:
             stop_id = stu.stop_id
@@ -266,19 +277,16 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
             delay_minutes = round(delay_seconds / 60)
 
-            # Pull track and official MTA status from MTARR extension (field 1005).
             ext_track, mta_status = extract_stop_time_update_ext(stu)
-            # Fallback: look up track from static GTFS stop_times if RT extension absent
             static_track = ""
-            if not ext_track and static_stops:
+            if not ext_track and not trip_track and static_stops:
                 static_track = next(
                     (s.track for s in static_stops if s.stop_id == stop_id and s.track),
-                    ""
+                    "",
                 )
-            track = _sanitize(ext_track or static_track or vehicle_label, _MAX_TRACK_LEN)
+            track = _sanitize(ext_track or trip_track or static_track or vehicle_label, _MAX_TRACK_LEN)
             status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
 
-            # Departure status based on minutes until this train leaves the station
             minutes_until = (estimated_ts - now_ts) / 60
             if minutes_until <= 1:
                 departure_status = "Stand Clear of the Closing Doors Please, Departing"
@@ -287,19 +295,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             else:
                 departure_status = "Scheduled Departure"
 
-            current_stop, current_stop_id, stops_remaining = self._estimate_current_stop(
-                tu.stop_time_update, now_ts
-            )
-            service_type = self._classify_service_type(static_stops)
-
-            # Lat/lon for map display — use current stop coordinates from GTFS
-            current_lat: float | None = None
-            current_lon: float | None = None
-            if current_stop_id and self._gtfs.is_loaded():
-                _si = self._gtfs.data.stops.get(current_stop_id)
-                if _si and not (_si.lat == 0.0 and _si.lon == 0.0):
-                    current_lat = _si.lat
-                    current_lon = _si.lon
+            stops_to_station = self._calc_stops_to_station(static_stops, position, stop_id)
 
             stops[stop_id].append(
                 {
@@ -323,23 +319,21 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "stop_sequence": stu.stop_sequence,
                     "destination": destination,
                     "origin": origin,
-                    "current_stop": current_stop,
-                    "current_stop_id": current_stop_id,
-                    "stops_remaining": stops_remaining,
+                    "current_stop": position["stop_name"],
+                    "current_stop_id": position["stop_id"],
+                    "next_stop": position["next_stop_name"],
+                    "is_en_route": position["is_en_route"],
+                    "stops_remaining": position["stops_remaining"],
+                    "stops_to_station": stops_to_station,
                     "service_type": service_type,
                     "departure_status": departure_status,
-                    "latitude": current_lat,
-                    "longitude": current_lon,
+                    "latitude": position["lat"],
+                    "longitude": position["lon"],
                     "all_stop_names": [s.stop_name for s in static_stops],
                     "trip_stops": (
                         self._build_upcoming_stops(static_stops, stu.stop_sequence)
                         if static_stops
                         else self._build_rt_stops(tu.stop_time_update, stu.stop_sequence)
-                    ),
-                    "_diagnostic": self._build_diagnostic(
-                        tu, stu, rt_trip_id, static_trip_id, entity_id, route_id, direction,
-                        vehicle_label, scheduled_ts, estimated_ts,
-                        delay_seconds, ext_track, mta_status,
                     ),
                 }
             )
@@ -605,121 +599,153 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             })
         return result
 
-    def _build_diagnostic(
-        self,
-        tu: Any,
-        stu: Any,
-        rt_trip_id: str,
-        static_trip_id: str,
-        entity_id: str,
-        route_id: str,
-        direction: int,
-        vehicle_label: str,
-        scheduled_ts: int,
-        estimated_ts: float,
-        delay_seconds: int,
-        ext_track: str,
-        mta_status: str,
-    ) -> dict:
-        """Build the full diagnostic attribute dict for one StopTimeUpdate."""
-        vehicle_id = ""
-        vehicle_license = ""
-        feed_timestamp = 0
-        try:
-            if tu.HasField("vehicle"):
-                vehicle_id = tu.vehicle.id
-                vehicle_license = tu.vehicle.license_plate
-        except Exception:
-            pass
-        try:
-            feed_timestamp = tu.timestamp
-        except Exception:
-            pass
-
-        arr_time = arr_delay = dep_time = dep_delay = None
-        try:
-            if stu.HasField("arrival"):
-                arr_time = datetime.fromtimestamp(stu.arrival.time, tz=timezone.utc).isoformat() if stu.arrival.time else None
-                arr_delay = stu.arrival.delay
-        except Exception:
-            pass
-        try:
-            if stu.HasField("departure"):
-                dep_time = datetime.fromtimestamp(stu.departure.time, tz=timezone.utc).isoformat() if stu.departure.time else None
-                dep_delay = stu.departure.delay
-        except Exception:
-            pass
-
-        mtarr = diagnose_stop_time_update(stu)
-
-        return {
-            # ── Trip descriptor (raw RT values) ──────────────────────────
-            "rt_entity_id": entity_id,
-            "rt_trip_id": rt_trip_id,
-            "rt_route_id": route_id,
-            "rt_direction_id": tu.trip.direction_id,
-            "rt_start_date": tu.trip.start_date,
-            "rt_start_time": tu.trip.start_time,
-            "rt_schedule_relationship": tu.trip.schedule_relationship,
-            # ── Static GTFS resolved ──────────────────────────────────────
-            "static_trip_id": static_trip_id,
-            "static_direction_id": direction,
-            "static_trip_short_name": self._gtfs.get_raw_trip_short_name(static_trip_id) if self._gtfs.is_loaded() else "",
-            "static_headsign": self._get_headsign(static_trip_id),
-            "static_route_name": self._gtfs.get_route_name(route_id) if self._gtfs.is_loaded() else "",
-            # ── Vehicle ───────────────────────────────────────────────────
-            "vehicle_id": vehicle_id,
-            "vehicle_label": vehicle_label,
-            "vehicle_license_plate": vehicle_license,
-            "feed_timestamp": datetime.fromtimestamp(feed_timestamp, tz=timezone.utc).isoformat() if feed_timestamp else "",
-            # ── This stop's RT times ──────────────────────────────────────
-            "stop_id": stu.stop_id,
-            "stop_sequence": stu.stop_sequence,
-            "stop_schedule_relationship": stu.schedule_relationship,
-            "rt_arrival_time": arr_time,
-            "rt_arrival_delay_s": arr_delay,
-            "rt_departure_time": dep_time,
-            "rt_departure_delay_s": dep_delay,
-            "scheduled_time_iso": datetime.fromtimestamp(scheduled_ts, tz=timezone.utc).isoformat(),
-            "estimated_time_iso": datetime.fromtimestamp(estimated_ts, tz=timezone.utc).isoformat(),
-            "delay_seconds": delay_seconds,
-            # ── MTARR extension (field 1005) ──────────────────────────────
-            "mtarr_extension_present": mtarr["mtarr_extension_present"],
-            "mtarr_unknown_field_numbers": mtarr["unknown_field_numbers"],
-            "mtarr_track": ext_track,
-            "mtarr_train_status": mta_status,
-        }
-
     def _estimate_current_stop(
         self, stop_time_updates: Any, now_ts: float
-    ) -> tuple[str, str, int]:
-        """Return (stop_name, stop_id, upcoming_stop_count) for the last departed stop."""
-        current_stop = ""
-        current_stop_id = ""
-        stops_remaining = 0
-        for stu in sorted(stop_time_updates, key=lambda s: s.stop_sequence):
-            dep_ts = 0
+    ) -> dict[str, Any]:
+        """Return positioning dict for a train based on its RT stop_time_updates.
+
+        Interpolates location between last-departed and next upcoming stop when
+        the train has been moving for more than 90 seconds.
+        """
+        sorted_stus = sorted(stop_time_updates, key=lambda s: s.stop_sequence)
+
+        events: list[tuple[float, str, int]] = []
+        for stu in sorted_stus:
+            dep_ts: float = 0
             if stu.HasField("departure") and stu.departure.time:
                 dep_ts = stu.departure.time + (stu.departure.delay or 0)
             elif stu.HasField("arrival") and stu.arrival.time:
                 dep_ts = stu.arrival.time + (stu.arrival.delay or 0)
-            if dep_ts and dep_ts <= now_ts:
-                current_stop_id = stu.stop_id
-                current_stop = (
-                    self._gtfs.get_stop_name(stu.stop_id)
-                    if self._gtfs.is_loaded()
-                    else FALLBACK_STATIONS.get(stu.stop_id, stu.stop_id)
-                )
-            elif dep_ts:
-                stops_remaining += 1
-        return current_stop, current_stop_id, stops_remaining
+            if dep_ts:
+                events.append((dep_ts, stu.stop_id, stu.stop_sequence))
+
+        _empty: dict[str, Any] = {
+            "stop_name": "", "stop_id": "", "stop_sequence": 0,
+            "stops_remaining": 0, "lat": None, "lon": None,
+            "is_en_route": False, "next_stop_name": "", "next_stop_id": "",
+        }
+        if not events:
+            return _empty
+
+        stops_remaining = sum(1 for t, _, _ in events if t > now_ts)
+
+        # Find the last stop the train has departed
+        last_idx = -1
+        for i, (dep_ts, _, _) in enumerate(events):
+            if dep_ts <= now_ts:
+                last_idx = i
+
+        if last_idx == -1:
+            # Train has not yet departed its first stop
+            _, stop_id, stop_seq = events[0]
+            lat, lon = self._coords(stop_id)
+            return {
+                **_empty,
+                "stop_name": self._stop_name(stop_id),
+                "stop_id": stop_id,
+                "stop_sequence": stop_seq,
+                "stops_remaining": stops_remaining,
+                "lat": lat, "lon": lon,
+            }
+
+        dep_ts, stop_id, stop_seq = events[last_idx]
+        next_stop_id = ""
+        next_stop_name = ""
+        is_en_route = False
+
+        next_idx = last_idx + 1
+        if next_idx < len(events):
+            next_dep_ts, next_stop_id, _ = events[next_idx]
+            next_stop_name = self._stop_name(next_stop_id)
+            # Mark as en route if > 90 s since departing last stop
+            if now_ts - dep_ts > 90:
+                is_en_route = True
+
+        if is_en_route:
+            display_name = f"En Route to {next_stop_name}"
+            next_dep_ts = events[next_idx][0]
+            frac = min(1.0, max(0.0, (now_ts - dep_ts) / max(1.0, next_dep_ts - dep_ts)))
+            lat, lon = self._interp_coords(stop_id, next_stop_id, frac)
+        else:
+            display_name = self._stop_name(stop_id)
+            lat, lon = self._coords(stop_id)
+
+        return {
+            "stop_name": display_name,
+            "stop_id": stop_id,
+            "stop_sequence": stop_seq,
+            "stops_remaining": stops_remaining,
+            "lat": lat,
+            "lon": lon,
+            "is_en_route": is_en_route,
+            "next_stop_name": next_stop_name,
+            "next_stop_id": next_stop_id,
+        }
+
+    def _stop_name(self, stop_id: str) -> str:
+        if self._gtfs.is_loaded():
+            return self._gtfs.get_stop_name(stop_id)
+        return FALLBACK_STATIONS.get(stop_id, stop_id)
+
+    def _coords(self, stop_id: str) -> tuple[float | None, float | None]:
+        if self._gtfs.is_loaded():
+            si = self._gtfs.data.stops.get(stop_id)
+            if si and not (si.lat == 0.0 and si.lon == 0.0):
+                return si.lat, si.lon
+        return None, None
+
+    def _interp_coords(
+        self, from_id: str, to_id: str, frac: float
+    ) -> tuple[float | None, float | None]:
+        from_lat, from_lon = self._coords(from_id)
+        to_lat, to_lon = self._coords(to_id)
+        if None in (from_lat, from_lon, to_lat, to_lon):
+            return from_lat, from_lon
+        return (
+            from_lat + (to_lat - from_lat) * frac,  # type: ignore[operator]
+            from_lon + (to_lon - from_lon) * frac,  # type: ignore[operator]
+        )
+
+    def _calc_stops_to_station(
+        self, static_stops: list, position: dict, target_stop_id: str
+    ) -> int:
+        """Count stops between current position and target station."""
+        if not static_stops:
+            return 0
+        ids = [s.stop_id for s in static_stops]
+        try:
+            target_idx = ids.index(target_stop_id)
+        except ValueError:
+            return 0
+        if position.get("is_en_route") and position.get("next_stop_id"):
+            try:
+                start_idx = ids.index(position["next_stop_id"])
+                # En route: count from next_stop inclusive to target inclusive
+                return max(0, target_idx - start_idx + 1)
+            except ValueError:
+                pass
+        try:
+            current_idx = ids.index(position.get("stop_id", ""))
+            return max(0, target_idx - current_idx)
+        except ValueError:
+            return 0
 
     @staticmethod
     def _classify_service_type(static_stops: list) -> str:
-        """Heuristic: trains with >10 scheduled stops are Local, otherwise Express."""
+        """Classify service type from stop pattern.
+
+        Local  — stops at Woodlawn, Bronxville, or Tuckahoe (inner Harlem Line suburbs)
+        Super Express — skips Harlem-125th Street entirely
+        Express — everything else
+        """
         if not static_stops:
             return ""
-        return "Local" if len(static_stops) > 10 else "Express"
+        stop_names = {s.stop_name for s in static_stops}
+        if stop_names & _LOCAL_INDICATOR_STOPS:
+            return "Local"
+        if not any(_SUPER_EXPRESS_STOP in name.lower() for name in stop_names):
+            return "Super Express"
+        return "Express"
 
     def _resolve_terminus(self, trip_update: Any, static_stops: list, last: bool) -> str:
         if static_stops:

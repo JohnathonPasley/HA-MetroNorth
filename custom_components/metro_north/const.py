@@ -68,6 +68,8 @@ ATTR_CURRENT_STOP = "current_stop"
 ATTR_STOPS_REMAINING = "stops_remaining"
 ATTR_SERVICE_TYPE = "service_type"
 ATTR_DEPARTURE_STATUS = "departure_status"
+ATTR_STOPS_TO_STATION = "stops_to_station"
+ATTR_NEXT_STOP = "next_stop"
 
 CONF_LOCAL_STOP_INDICATORS = "local_stop_indicators"
 CONF_ROUTES = "routes"

@@ -40,6 +40,15 @@ class StopTimeInfo:
     arrival_time: str
     departure_time: str
     track: str = ""  # from track / platform column in stop_times.txt (non-standard)
+    pickup_type: int = 0
+    drop_off_type: int = 0
+
+
+@dataclass
+class ServiceCalendar:
+    days: frozenset  # weekday ints 0=Mon..6=Sun the service runs
+    start_date: str  # YYYYMMDD
+    end_date: str    # YYYYMMDD
 
 
 @dataclass
@@ -48,6 +57,7 @@ class TripInfo:
     route_id: str
     headsign: str
     direction_id: int
+    service_id: str = ""
     short_name: str = ""  # trip_short_name → human-readable train number, e.g. "509"
 
     @property
@@ -64,6 +74,8 @@ class GTFSStaticData:
         self.routes: dict[str, str] = {}
         self.short_name_index: dict[str, str] = {}  # trip_short_name → trip_id
         self.last_updated: datetime | None = None
+        self.calendar: dict[str, ServiceCalendar] = {}  # service_id → calendar
+        self.calendar_exceptions: dict[str, dict[str, int]] = {}  # service_id → {date: exception_type}
 
 
 class GTFSStaticManager:
@@ -136,6 +148,7 @@ class GTFSStaticManager:
                                     route_id=row["route_id"],
                                     headsign=row.get("trip_headsign", "").strip(),
                                     direction_id=int(row.get("direction_id") or 0),
+                                    service_id=row.get("service_id", "").strip(),
                                     short_name=row.get("trip_short_name", "").strip(),
                                 )
                             except (KeyError, ValueError):
@@ -170,6 +183,8 @@ class GTFSStaticManager:
                                 arrival_time=row.get("arrival_time", ""),
                                 departure_time=row.get("departure_time", ""),
                                 track=row.get(track_col, "").strip() if track_col else "",
+                                pickup_type=int(row.get("pickup_type") or 0),
+                                drop_off_type=int(row.get("drop_off_type") or 0),
                             )
                             if trip_id not in data.stop_times:
                                 data.stop_times[trip_id] = []
@@ -177,6 +192,27 @@ class GTFSStaticManager:
 
                     for tid in data.stop_times:
                         data.stop_times[tid].sort(key=lambda x: x.stop_sequence)
+
+                if "calendar.txt" in names:
+                    _DAY_COLS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+                    with zf.open("calendar.txt") as f:
+                        reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+                        for row in reader:
+                            days = frozenset(i for i, col in enumerate(_DAY_COLS) if row.get(col) == "1")
+                            data.calendar[row["service_id"]] = ServiceCalendar(
+                                days=days,
+                                start_date=row.get("start_date", ""),
+                                end_date=row.get("end_date", ""),
+                            )
+
+                if "calendar_dates.txt" in names:
+                    with zf.open("calendar_dates.txt") as f:
+                        reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8-sig"))
+                        for row in reader:
+                            sid = row["service_id"]
+                            if sid not in data.calendar_exceptions:
+                                data.calendar_exceptions[sid] = {}
+                            data.calendar_exceptions[sid][row["date"]] = int(row.get("exception_type") or 0)
 
                 # Only expose stops that have scheduled service in this feed
                 if active_stop_ids:
@@ -263,3 +299,23 @@ class GTFSStaticManager:
             if s.name == name:
                 return s.stop_id
         return None
+
+    def trip_runs_on_date(self, trip_id: str, check_date: "datetime") -> bool:
+        """Return True if the trip is scheduled to run on check_date."""
+        trip = self.data.trips.get(trip_id)
+        if not trip or not trip.service_id:
+            return True
+        sid = trip.service_id
+        date_str = check_date.strftime("%Y%m%d")
+        weekday = check_date.weekday()
+        exc = self.data.calendar_exceptions.get(sid, {}).get(date_str)
+        if exc == 1:
+            return True
+        if exc == 2:
+            return False
+        cal = self.data.calendar.get(sid)
+        if not cal:
+            return True
+        if date_str < cal.start_date or date_str > cal.end_date:
+            return False
+        return weekday in cal.days
