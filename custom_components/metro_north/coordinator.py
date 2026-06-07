@@ -177,7 +177,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
         for entity in feed.entity:
             if entity.HasField("trip_update"):
-                self._parse_trip_update(entity.trip_update, stops, now_ts)
+                self._parse_trip_update(entity.trip_update, stops, now_ts, entity.id)
             if entity.HasField("vehicle"):
                 v = self._parse_vehicle_entity(entity.vehicle, entity.id)
                 if v:
@@ -198,7 +198,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         if not vehicles and self._gtfs.is_loaded():
             for entity in feed.entity:
                 if entity.HasField("trip_update"):
-                    v = self._synthesize_vehicle(entity.trip_update, now_ts)
+                    v = self._synthesize_vehicle(entity.trip_update, entity.id, now_ts)
                     if v and v["vehicle_id"] not in vehicles:
                         vehicles[v["vehicle_id"]] = v
 
@@ -209,18 +209,28 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         tu: Any,
         stops: dict[str, list],
         now_ts: float,
+        entity_id: str = "",
     ) -> None:
-        trip_id = tu.trip.trip_id
+        rt_trip_id = tu.trip.trip_id
         route_id = tu.trip.route_id
-        static_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
         vehicle_label = tu.vehicle.label if tu.HasField("vehicle") else ""
+
+        # Resolve RT trip_id to static GTFS trip_id.
+        # Per MTA: RT trip.trip_id matches static trip_short_name (not trip_id).
+        static_trip_id = self._gtfs.resolve_trip_id(rt_trip_id) if self._gtfs.is_loaded() else rt_trip_id
+
+        static_stops = self._gtfs.get_trip_stops(static_trip_id) if self._gtfs.is_loaded() else []
 
         # Prefer static GTFS direction_id — the RT field defaults to 0 when unset
         if self._gtfs.is_loaded():
-            trip_info = self._gtfs.get_trip_info(trip_id)
+            trip_info = self._gtfs.get_trip_info(static_trip_id)
             direction = trip_info.direction_id if trip_info else tu.trip.direction_id
         else:
             direction = tu.trip.direction_id
+
+        # entity.id = human-readable train number per MTA developer docs.
+        # Fall back to vehicle label, then rt_trip_id.
+        train_number = entity_id or vehicle_label or rt_trip_id
 
         for stu in tu.stop_time_update:
             stop_id = stu.stop_id
@@ -252,10 +262,6 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             track = _sanitize(ext_track or vehicle_label, _MAX_TRACK_LEN)
             status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
 
-            train_number = (
-                self._gtfs.get_trip_short_name(trip_id) if self._gtfs.is_loaded() else ""
-            ) or trip_id
-
             current_stop, stops_remaining = self._estimate_current_stop(
                 tu.stop_time_update, now_ts
             )
@@ -263,14 +269,14 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
             stops[stop_id].append(
                 {
-                    "trip_id": trip_id,
+                    "trip_id": rt_trip_id,
                     "train_number": train_number,
                     "route_id": route_id,
                     "route_name": self._gtfs.get_route_name(route_id)
                     if self._gtfs.is_loaded()
                     else route_id,
                     "direction": direction,
-                    "headsign": self._get_headsign(trip_id),
+                    "headsign": self._get_headsign(static_trip_id),
                     "scheduled_time": datetime.fromtimestamp(
                         scheduled_ts, tz=timezone.utc
                     ).isoformat(),
@@ -293,7 +299,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                         else self._build_rt_stops(tu.stop_time_update, stu.stop_sequence)
                     ),
                     "_diagnostic": self._build_diagnostic(
-                        tu, stu, trip_id, route_id, direction,
+                        tu, stu, rt_trip_id, static_trip_id, entity_id, route_id, direction,
                         vehicle_label, scheduled_ts, estimated_ts,
                         delay_seconds, ext_track, mta_status,
                     ),
@@ -406,7 +412,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     entry["priority"] = sort_order
                 alerts[key].append(entry)
 
-    def _synthesize_vehicle(self, tu: Any, now_ts: float) -> dict | None:
+    def _synthesize_vehicle(self, tu: Any, entity_id: str, now_ts: float) -> dict | None:
         """Build an approximate vehicle from TripUpdate + static GTFS stop coordinates.
 
         Used when no real VehiclePosition data is available.  The pin appears at
@@ -415,7 +421,8 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         if not self._gtfs.is_loaded():
             return None
 
-        trip_id = tu.trip.trip_id
+        rt_trip_id = tu.trip.trip_id
+        static_trip_id = self._gtfs.resolve_trip_id(rt_trip_id)
         route_id = tu.trip.route_id
 
         # Find the first stop that hasn't been departed yet.
@@ -439,10 +446,10 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         if not stop_info or (stop_info.lat == 0.0 and stop_info.lon == 0.0):
             return None
 
-        vehicle_id = (tu.vehicle.id if tu.HasField("vehicle") and tu.vehicle.id else trip_id)
-        vehicle_label = (tu.vehicle.label if tu.HasField("vehicle") and tu.vehicle.label else trip_id)
+        vehicle_id = (tu.vehicle.id if tu.HasField("vehicle") and tu.vehicle.id else entity_id or rt_trip_id)
+        vehicle_label = (tu.vehicle.label if tu.HasField("vehicle") and tu.vehicle.label else entity_id or rt_trip_id)
 
-        raw_stops = self._gtfs.get_trip_stops(trip_id)
+        raw_stops = self._gtfs.get_trip_stops(static_trip_id)
         trip_stops = [
             {
                 "stop_sequence": s.stop_sequence,
@@ -453,15 +460,16 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             for s in raw_stops
         ]
 
-        train_number = self._gtfs.get_trip_short_name(trip_id) or vehicle_label
+        # entity_id = human-readable train number per MTA developer docs
+        train_number = entity_id or vehicle_label
         return {
             "vehicle_id": _sanitize(vehicle_id, 64),
             "label": _sanitize(vehicle_label, _MAX_TRACK_LEN),
             "train_number": _sanitize(train_number, _MAX_TRACK_LEN),
-            "trip_id": trip_id,
+            "trip_id": rt_trip_id,
             "route_id": route_id,
             "route_name": self._gtfs.get_route_name(route_id),
-            "headsign": self._get_headsign(trip_id),
+            "headsign": self._get_headsign(static_trip_id),
             "latitude": stop_info.lat,
             "longitude": stop_info.lon,
             "bearing": 0,
@@ -536,7 +544,9 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         self,
         tu: Any,
         stu: Any,
-        trip_id: str,
+        rt_trip_id: str,
+        static_trip_id: str,
+        entity_id: str,
         route_id: str,
         direction: int,
         vehicle_label: str,
@@ -579,16 +589,18 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
         return {
             # ── Trip descriptor (raw RT values) ──────────────────────────
-            "rt_trip_id": trip_id,
+            "rt_entity_id": entity_id,
+            "rt_trip_id": rt_trip_id,
             "rt_route_id": route_id,
             "rt_direction_id": tu.trip.direction_id,
             "rt_start_date": tu.trip.start_date,
             "rt_start_time": tu.trip.start_time,
             "rt_schedule_relationship": tu.trip.schedule_relationship,
             # ── Static GTFS resolved ──────────────────────────────────────
+            "static_trip_id": static_trip_id,
             "static_direction_id": direction,
-            "static_trip_short_name": self._gtfs.get_raw_trip_short_name(trip_id) if self._gtfs.is_loaded() else "",
-            "static_headsign": self._get_headsign(trip_id),
+            "static_trip_short_name": self._gtfs.get_raw_trip_short_name(static_trip_id) if self._gtfs.is_loaded() else "",
+            "static_headsign": self._get_headsign(static_trip_id),
             "static_route_name": self._gtfs.get_route_name(route_id) if self._gtfs.is_loaded() else "",
             # ── Vehicle ───────────────────────────────────────────────────
             "vehicle_id": vehicle_id,
