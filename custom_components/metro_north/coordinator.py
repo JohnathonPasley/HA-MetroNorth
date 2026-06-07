@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     DOMAIN,
     FALLBACK_STATIONS,
+    GTFS_RT_ALERTS_URL,
     GTFS_RT_URL,
     GTFS_RT_VEHICLES_URL,
 )
@@ -94,6 +95,15 @@ def _train_status(delay_minutes: int) -> str:
     return "On Time"
 
 
+def _infer_direction(destination: str) -> int:
+    """Infer Metro North direction from destination name.
+
+    direction_id in the RT feed defaults to 0 for all trains and is unreliable.
+    Grand Central Terminal is the terminal for all inbound Metro North trains.
+    """
+    return 0 if "grand central" in destination.lower() else 1
+
+
 class MetroNorthCoordinator(DataUpdateCoordinator):
     """Coordinator — fetches GTFS-RT, parses trips + vehicles, adjusts poll rate."""
 
@@ -171,7 +181,6 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         )
         stops: dict[str, list] = {sid: [] for sid in known_stops}
         vehicles: dict[str, dict] = {}  # vehicle_id → vehicle dict (dedup)
-        alerts: dict[str, list] = {}   # stop_id or route_id → [alert_dict, ...]
 
         now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -182,8 +191,9 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 v = self._parse_vehicle_entity(entity.vehicle, entity.id)
                 if v:
                     vehicles[v["vehicle_id"]] = v
-            if entity.HasField("alert"):
-                self._parse_alert(entity.alert, alerts, now_ts)
+
+        # Fetch alerts from the dedicated Metro North alerts endpoint
+        alerts = self._fetch_alerts_rt(now_ts)
 
         # Sort each stop by estimated departure
         for sid in stops:
@@ -221,12 +231,12 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
         static_stops = self._gtfs.get_trip_stops(static_trip_id) if self._gtfs.is_loaded() else []
 
-        # Prefer static GTFS direction_id — the RT field defaults to 0 when unset
-        if self._gtfs.is_loaded():
-            trip_info = self._gtfs.get_trip_info(static_trip_id)
-            direction = trip_info.direction_id if trip_info else tu.trip.direction_id
-        else:
-            direction = tu.trip.direction_id
+        # Resolve terminus once for the whole trip (used for direction inference)
+        destination = self._resolve_terminus(tu, static_stops, last=True)
+        origin = self._resolve_terminus(tu, static_stops, last=False)
+
+        # Infer direction from destination — RT direction_id defaults to 0 for all trains
+        direction = _infer_direction(destination)
 
         # entity.id = human-readable train number per MTA developer docs.
         # Fall back to vehicle label, then rt_trip_id.
@@ -287,8 +297,8 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "status": status,
                     "track": track,
                     "stop_sequence": stu.stop_sequence,
-                    "destination": self._resolve_terminus(tu, static_stops, last=True),
-                    "origin": self._resolve_terminus(tu, static_stops, last=False),
+                    "destination": destination,
+                    "origin": origin,
                     "current_stop": current_stop,
                     "stops_remaining": stops_remaining,
                     "service_type": service_type,
@@ -480,6 +490,23 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             "timestamp": int(now_ts),
             "trip_stops": trip_stops,
         }
+
+    def _fetch_alerts_rt(self, now_ts: float) -> dict[str, list]:
+        """Fetch service alerts from the dedicated Metro North alerts endpoint."""
+        alerts: dict[str, list] = {}
+        try:
+            resp = requests.get(
+                GTFS_RT_ALERTS_URL, headers=self._headers, timeout=REQUEST_TIMEOUT
+            )
+            resp.raise_for_status()
+            feed = gtfs_realtime_pb2.FeedMessage()
+            feed.ParseFromString(resp.content)
+            for entity in feed.entity:
+                if entity.HasField("alert"):
+                    self._parse_alert(entity.alert, alerts, now_ts)
+        except Exception as err:
+            _LOGGER.debug("Metro North alerts feed unavailable: %s", err)
+        return alerts
 
     def _supplement_vehicles(self, vehicles: dict[str, dict]) -> None:
         """Try the dedicated vehicle feed and merge any new positions found."""

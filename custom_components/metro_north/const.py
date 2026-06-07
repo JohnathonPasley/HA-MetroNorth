@@ -10,8 +10,8 @@ CONF_DEFAULT_INTERVAL = "default_interval"
 
 # Direction options (stored in config entry)
 DIRECTION_BOTH = "both"
-DIRECTION_INBOUND = "inbound"    # direction_id = 1 in GTFS (toward Grand Central)
-DIRECTION_OUTBOUND = "outbound"  # direction_id = 0 in GTFS (away from Grand Central)
+DIRECTION_INBOUND = "inbound"    # toward Grand Central Terminal
+DIRECTION_OUTBOUND = "outbound"  # away from Grand Central Terminal
 
 # Defaults
 DEFAULT_NUM_TRAINS = 3
@@ -41,6 +41,7 @@ DEFAULT_PEAK_2_END = "20:00"
 # Feed URLs
 GTFS_RT_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr"
 GTFS_RT_VEHICLES_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr-vehicles"
+GTFS_RT_ALERTS_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fmnr-alerts"
 GTFS_STATIC_URL = "https://rrgtfsfeeds.s3.amazonaws.com/gtfsmnr.zip"
 
 # Sensor / tracker attribute names

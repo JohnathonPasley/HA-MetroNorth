@@ -26,18 +26,14 @@ _MTA_EXT_FIELD = 1005  # extension field number on both StopTimeUpdate and Carri
 
 
 def diagnose_stop_time_update(stu: object) -> dict:
-    """Return diagnostic info about MTARR extension presence on a StopTimeUpdate.
-
-    Useful for debugging missing track/status: shows whether field 1005 is in
-    the feed at all, what other unknown extension fields are present, and the
-    parsed values if the extension was found.
-    """
+    """Return diagnostic info about MTARR extension presence on a StopTimeUpdate."""
     result: dict = {
         "mtarr_extension_present": False,
         "unknown_field_numbers": [],
         "track": "",
         "train_status": "",
     }
+    # Try UnknownFields() API first (pure Python / older protobuf)
     try:
         ufs = list(stu.UnknownFields())
         result["unknown_field_numbers"] = [uf.field_number for uf in ufs]
@@ -49,6 +45,19 @@ def diagnose_stop_time_update(stu: object) -> dict:
                     track, status = _parse_track_and_status(bytes(raw))
                     result["track"] = track
                     result["train_status"] = status
+                return result
+    except Exception:
+        pass
+    # Fallback: parse raw _unknown_fields bytes (protobuf 4.x upb C backend)
+    try:
+        raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
+        if raw_bytes:
+            nums, track, status = _parse_raw_unknown_fields(bytes(raw_bytes))
+            result["unknown_field_numbers"] = nums
+            if track or status:
+                result["mtarr_extension_present"] = True
+                result["track"] = track
+                result["train_status"] = status
     except Exception as err:
         result["error"] = str(err)
     return result
@@ -59,12 +68,22 @@ def extract_stop_time_update_ext(stu: object) -> tuple[str, str]:
 
     Returns ("", "") when the extension is absent or unparseable.
     """
+    # Try UnknownFields() API first (pure Python / older protobuf)
     try:
         for uf in stu.UnknownFields():
             if uf.field_number == _MTA_EXT_FIELD:
                 raw = uf.data
                 if isinstance(raw, (bytes, bytearray, memoryview)):
                     return _parse_track_and_status(bytes(raw))
+    except Exception:
+        pass
+    # Fallback: parse raw _unknown_fields bytes (protobuf 4.x upb C backend)
+    try:
+        raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
+        if raw_bytes:
+            _, track, status = _parse_raw_unknown_fields(bytes(raw_bytes))
+            if track or status:
+                return track, status
     except Exception as err:
         _LOGGER.debug("MTARR StopTimeUpdate extension parse error: %s", err)
     return "", ""
@@ -85,6 +104,46 @@ def extract_carriage_details(carriage: object) -> dict[str, object]:
 
 
 # ── Wire-format parsers ────────────────────────────────────────────────────
+
+
+def _parse_raw_unknown_fields(data: bytes) -> tuple[list[int], str, str]:
+    """Parse a flat sequence of protobuf unknown fields stored in _unknown_fields.
+
+    Returns (field_numbers_seen, track, train_status).
+    Used as a fallback for protobuf 4.x upb backend where UnknownFields() is empty.
+    """
+    field_numbers: list[int] = []
+    track = ""
+    train_status = ""
+    pos = 0
+    n = len(data)
+    while pos < n:
+        try:
+            tag, pos = _varint(data, pos)
+            field_num = tag >> 3
+            wire_type = tag & 0x7
+            field_numbers.append(field_num)
+            if wire_type == 2:  # length-delimited
+                length, pos = _varint(data, pos)
+                value_bytes = data[pos: pos + length]
+                pos += length
+                if field_num == _MTA_EXT_FIELD:
+                    t, s = _parse_track_and_status(bytes(value_bytes))
+                    if t:
+                        track = t
+                    if s:
+                        train_status = s
+            elif wire_type == 0:
+                _, pos = _varint(data, pos)
+            elif wire_type == 1:
+                pos += 8
+            elif wire_type == 5:
+                pos += 4
+            else:
+                break
+        except Exception:
+            break
+    return field_numbers, track, train_status
 
 
 def _parse_track_and_status(data: bytes) -> tuple[str, str]:
