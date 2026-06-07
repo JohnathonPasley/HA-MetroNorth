@@ -35,6 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor", "device_tracker"]
 _STATION_ZONES_KEY = "_station_zones"
+_GTFS_MANAGER_KEY = "_gtfs_manager"
 
 
 async def _async_create_station_zones(hass: HomeAssistant, gtfs_static) -> set[str]:
@@ -119,7 +120,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Merge entry.data + entry.options (options override on re-configure)
     config = {**entry.data, **entry.options}
 
-    gtfs_static = GTFSStaticManager(hass)
+    # Reuse existing GTFSStaticManager across reloads to avoid re-downloading GTFS on every options change
+    if _GTFS_MANAGER_KEY not in hass.data[DOMAIN]:
+        hass.data[DOMAIN][_GTFS_MANAGER_KEY] = GTFSStaticManager(hass)
+    gtfs_static = hass.data[DOMAIN][_GTFS_MANAGER_KEY]
 
     coordinator = MetroNorthCoordinator(
         hass=hass,

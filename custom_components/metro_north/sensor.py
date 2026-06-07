@@ -92,6 +92,11 @@ async def async_setup_entry(
             entities.append(
                 TrainAtPositionSensor(coordinator, stop_id, station_name, position, direction, local_indicators, routes)
             )
+            dep_uid = f"{DOMAIN}_departure_status_{position}_{stop_id}"
+            expected_unique_ids.add(dep_uid)
+            entities.append(
+                TrainDepartureStatusSensor(coordinator, stop_id, station_name, position, direction, routes)
+            )
         expected_unique_ids.add(f"{DOMAIN}_upcoming_{stop_id}")
         expected_unique_ids.add(f"{DOMAIN}_alerts_{stop_id}")
         entities.append(UpcomingTrainsSensor(coordinator, stop_id, station_name, direction, routes))
@@ -308,6 +313,53 @@ class UpcomingTrainsSensor(_StationBase, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {ATTR_UPCOMING_TRAINS: [_train_attrs_summary(t) for t in self._get_filtered()]}
+
+
+class TrainDepartureStatusSensor(_StationBase, SensorEntity):
+    """Departure status for the Nth upcoming train at a station."""
+
+    def __init__(
+        self,
+        coordinator: MetroNorthCoordinator,
+        stop_id: str,
+        station_name: str,
+        position: int,
+        direction: str,
+        routes: list[str] | None = None,
+    ) -> None:
+        super().__init__(coordinator, stop_id, station_name)
+        self._position = position
+        self._direction = direction
+        self._routes: list[str] = routes or []
+        suffix = _direction_suffix(direction)
+        self._attr_unique_id = f"{DOMAIN}_departure_status_{position}_{stop_id}"
+        self._attr_name = f"Train {position}{suffix} Departure Status"
+        self._attr_icon = "mdi:train-car-flatbed-tank"
+
+    def _get_target(self) -> dict[str, Any] | None:
+        trains = _filtered_trains(self._get_trains(), self._direction)
+        trains = _filter_by_routes(trains, self._routes)
+        if len(trains) >= self._position:
+            return trains[self._position - 1]
+        return None
+
+    @property
+    def native_value(self) -> str | None:
+        t = self._get_target()
+        return t.get("departure_status", "") if t else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        t = self._get_target()
+        if not t:
+            return {}
+        return {
+            ATTR_TRAIN_NUMBER: t.get("train_number") or t.get("trip_id", ""),
+            ATTR_SCHEDULED_TIME: _fmt_time(t.get("scheduled_time")),
+            ATTR_ESTIMATED_TIME: _fmt_time(t.get("estimated_time")),
+            ATTR_DELAY_MINUTES: t.get("delay_minutes", 0),
+            ATTR_CURRENT_STOP: t.get("current_stop", ""),
+        }
 
 
 class ServiceAlertSensor(_StationBase, SensorEntity):
