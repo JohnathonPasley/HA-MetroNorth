@@ -258,20 +258,22 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             if stop_id not in stops:
                 continue
 
-            scheduled_ts: int | None = None
+            estimated_ts: int | None = None
             delay_seconds = 0
 
             if stu.HasField("departure") and stu.departure.time:
-                scheduled_ts = stu.departure.time
+                # departure.time IS the estimated time in the MTA feed (delay already applied).
+                # departure.delay is the offset from schedule used to derive scheduled_ts.
+                estimated_ts = stu.departure.time
                 delay_seconds = stu.departure.delay or 0
             elif stu.HasField("arrival") and stu.arrival.time:
-                scheduled_ts = stu.arrival.time
+                estimated_ts = stu.arrival.time
                 delay_seconds = stu.arrival.delay or 0
 
-            if scheduled_ts is None:
+            if estimated_ts is None:
                 continue
 
-            estimated_ts = scheduled_ts + delay_seconds
+            scheduled_ts = estimated_ts - delay_seconds
             if estimated_ts < now_ts - 60:
                 continue
 
