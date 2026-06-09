@@ -209,6 +209,5 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
             "current_stop_sequence": v.get("current_stop_sequence"),
             ATTR_TRIP_STOPS: trip_stops,
         }
-        if v.get("carriage_details"):
-            attrs[ATTR_CARRIAGE_DETAILS] = v["carriage_details"]
+        attrs[ATTR_CARRIAGE_DETAILS] = v.get("carriage_details", [])
         return attrs

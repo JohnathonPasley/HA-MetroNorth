@@ -267,8 +267,7 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
             attrs["latitude"] = t["latitude"]
         if t.get("longitude") is not None:
             attrs["longitude"] = t["longitude"]
-        if t.get("mtarr_raw"):
-            attrs[ATTR_MTARR_RAW] = t["mtarr_raw"]
+        attrs[ATTR_MTARR_RAW] = t.get("mtarr_raw", "")
         return attrs
 
 
