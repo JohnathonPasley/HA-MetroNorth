@@ -7,14 +7,24 @@ The MTARR proto (gtfs-realtime-MTARR.proto) defines two extensions:
     - trainStatus (string, field 2)  — official MTA status string
 
   extend VehiclePosition.CarriageDetails { MtaRailroadCarriageDetails @ field 1005 }
-    - bicycles_allowed (int32, field 1)
+    - bicycles_allowed (int32,  field 1)
     - carriage_class   (string, field 2)
-    - quiet_carriage   (enum,   field 3)
-    - toilet_facilities(enum,   field 4)
+    - quiet_carriage   (enum,   field 3)  0=unknown, 1=quiet, 2=not_quiet
+    - toilet_facilities(enum,   field 4)  0=unknown, 1=present, 2=absent
 
 Because the MTARR descriptor is not registered in the default protobuf pool,
-these extension fields appear in .UnknownFields() on the parent message.
-We parse the embedded message bytes directly from the wire format.
+field 1005 appears as an unknown field on the parent message.
+
+Access strategy (tried in order):
+  1. google.protobuf.unknown_fields.UnknownFieldSet — correct for protobuf 4.x upb C backend
+  2. message.UnknownFields()                        — pure-Python / older protobuf
+  3. message._unknown_fields raw bytes              — last-resort for some builds
+
+Note on track availability: the MTA Metro North feed only includes the track
+extension on the Grand Central Terminal stop_time_update, and only after a
+platform has been assigned (typically ~10 min before departure). For inbound
+trains that haven't reached GCT the mtarr_raw attribute will legitimately be
+empty.
 """
 from __future__ import annotations
 
@@ -23,184 +33,87 @@ import logging
 _LOGGER = logging.getLogger(__name__)
 
 _MTA_EXT_FIELD = 1005  # extension field number on both StopTimeUpdate and CarriageDetails
-_MAX_STR_LEN = 256   # cap on any single extension string to prevent large allocations
-_MAX_VARINT_SHIFT = 63  # protobuf varints are at most 64-bit
+_MAX_STR_LEN = 256     # cap on any single string to prevent large allocations
+_MAX_VARINT_SHIFT = 63 # protobuf varints are at most 64-bit
 
 
-def diagnose_stop_time_update(stu: object) -> dict:
-    """Return diagnostic info about MTARR extension presence on a StopTimeUpdate."""
-    result: dict = {
-        "mtarr_extension_present": False,
-        "unknown_field_numbers": [],
-        "track": "",
-        "train_status": "",
-    }
-    # Try UnknownFields() API first (pure Python / older protobuf)
+# ── Unified unknown-field accessor ────────────────────────────────────────────
+
+def _get_mtarr_ext_bytes(message: object) -> bytes:
+    """Return the raw embedded-message bytes of extension field 1005.
+
+    Tries three backends so the code works across protobuf 3.x pure-Python,
+    protobuf 4.x pure-Python, and protobuf 4.x upb C backend.
+    """
+    # 1. google.protobuf.unknown_fields.UnknownFieldSet
+    #    This is the officially supported cross-backend API introduced in 3.12
+    #    and the only one that reliably works with the upb C backend in 4.x.
     try:
-        ufs = list(stu.UnknownFields())
-        result["unknown_field_numbers"] = [uf.field_number for uf in ufs]
-        for uf in ufs:
+        from google.protobuf import unknown_fields as _uf_mod
+        for uf in _uf_mod.UnknownFieldSet(message):
             if uf.field_number == _MTA_EXT_FIELD:
-                result["mtarr_extension_present"] = True
-                raw = uf.data
-                if isinstance(raw, (bytes, bytearray, memoryview)):
-                    track, status = _parse_track_and_status(bytes(raw))
-                    result["track"] = track
-                    result["train_status"] = status
-                return result
+                data = uf.data
+                if isinstance(data, (bytes, bytearray, memoryview)):
+                    return bytes(data)
     except Exception:
         pass
-    # Fallback: parse raw _unknown_fields bytes (protobuf 4.x upb C backend)
-    try:
-        raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
-        if raw_bytes:
-            nums, track, status = _parse_raw_unknown_fields(bytes(raw_bytes))
-            result["unknown_field_numbers"] = nums
-            if track or status:
-                result["mtarr_extension_present"] = True
-                result["track"] = track
-                result["train_status"] = status
-    except Exception as err:
-        result["error"] = str(err)
-    return result
 
+    # 2. message.UnknownFields() — works with pure-Python protobuf (< 4.x or env flag)
+    try:
+        for uf in message.UnknownFields():
+            if uf.field_number == _MTA_EXT_FIELD:
+                data = uf.data
+                if isinstance(data, (bytes, bytearray, memoryview)):
+                    return bytes(data)
+    except Exception:
+        pass
+
+    # 3. _unknown_fields raw bytes — present in some protobuf builds as a bytes blob
+    try:
+        raw = getattr(message, "_unknown_fields", b"") or b""
+        if raw:
+            return _extract_field_bytes(bytes(raw), _MTA_EXT_FIELD)
+    except Exception:
+        pass
+
+    return b""
+
+
+# ── Public extractors ─────────────────────────────────────────────────────────
 
 def extract_stop_time_update_ext(stu: object) -> tuple[str, str]:
-    """Return (track, trainStatus) from MtaRailroadStopTimeUpdate on a StopTimeUpdate.
+    """Return (track, trainStatus) from MtaRailroadStopTimeUpdate.
 
     Returns ("", "") when the extension is absent or unparseable.
     """
-    track, status, _ = extract_stop_time_update_ext_raw(stu)
-    return track, status
-
-
-def extract_stop_time_update_ext_raw(stu: object) -> tuple[str, str, str]:
-    """Return (track, trainStatus, raw_hex) from MtaRailroadStopTimeUpdate.
-
-    raw_hex is the hex encoding of the MTARR extension's embedded message bytes;
-    empty string when the extension is absent or unparseable.
-    """
-    # Try UnknownFields() API first (pure Python / older protobuf)
-    try:
-        for uf in stu.UnknownFields():
-            if uf.field_number == _MTA_EXT_FIELD:
-                raw = uf.data
-                if isinstance(raw, (bytes, bytearray, memoryview)):
-                    raw_b = bytes(raw)
-                    track, status = _parse_track_and_status(raw_b)
-                    return track, status, raw_b.hex()
-    except Exception:
-        pass
-    # Fallback: parse raw _unknown_fields bytes (protobuf 4.x upb C backend)
-    try:
-        raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
-        if raw_bytes:
-            rb = bytes(raw_bytes)
-            _, track, status = _parse_raw_unknown_fields(rb)
-            ext_raw = _extract_field_bytes(rb, _MTA_EXT_FIELD)
-            if ext_raw or track or status:
-                return track, status, ext_raw.hex()
-    except Exception as err:
-        _LOGGER.debug("MTARR StopTimeUpdate extension parse error: %s", err)
-    return "", "", ""
+    raw = _get_mtarr_ext_bytes(stu)
+    if raw:
+        return _parse_track_and_status(raw)
+    return "", ""
 
 
 def extract_stop_time_update_ext_debug(stu: object) -> tuple[str, str, str]:
-    """Like extract_stop_time_update_ext but also returns raw MTARR extension bytes as hex.
+    """Return (track, trainStatus, raw_hex) from MtaRailroadStopTimeUpdate.
 
-    Returns (track, trainStatus, raw_hex). raw_hex is "" when extension is absent.
+    raw_hex is the hex encoding of the MTARR extension's embedded message bytes;
+    empty string when the extension is absent.
     """
-    # Try UnknownFields() API
-    try:
-        for uf in stu.UnknownFields():
-            if uf.field_number == _MTA_EXT_FIELD:
-                raw = uf.data
-                if isinstance(raw, (bytes, bytearray, memoryview)):
-                    b = bytes(raw)
-                    track, status = _parse_track_and_status(b)
-                    return track, status, b.hex()
-    except Exception:
-        pass
-    # Fallback: _unknown_fields bytes (protobuf 4.x upb backend)
-    try:
-        raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
-        if raw_bytes:
-            field_nums, track, status = _parse_raw_unknown_fields(bytes(raw_bytes))
-            # Extract just the MTARR extension bytes for the raw hex (re-parse to isolate)
-            mtarr_raw = _extract_field_bytes(bytes(raw_bytes), _MTA_EXT_FIELD)
-            return track, status, mtarr_raw.hex() if mtarr_raw else ""
-    except Exception as err:
-        _LOGGER.debug("MTARR StopTimeUpdate debug parse error: %s", err)
+    raw = _get_mtarr_ext_bytes(stu)
+    if raw:
+        track, status = _parse_track_and_status(raw)
+        return track, status, raw.hex()
     return "", "", ""
 
 
 def extract_carriage_details(carriage: object) -> dict[str, object]:
     """Return a dict with MtaRailroadCarriageDetails fields, or {} if absent."""
-    result: dict[str, object] = {}
-    try:
-        for uf in carriage.UnknownFields():
-            if uf.field_number == _MTA_EXT_FIELD:
-                raw = uf.data
-                if isinstance(raw, (bytes, bytearray, memoryview)):
-                    return _parse_carriage(bytes(raw))
-    except Exception:
-        pass
-    # Fallback: _unknown_fields bytes
-    try:
-        raw_bytes = getattr(carriage, "_unknown_fields", b"") or b""
-        if raw_bytes:
-            mtarr_raw = _extract_field_bytes(bytes(raw_bytes), _MTA_EXT_FIELD)
-            if mtarr_raw:
-                return _parse_carriage(bytes(mtarr_raw))
-    except Exception as err:
-        _LOGGER.debug("MTARR CarriageDetails extension parse error: %s", err)
-    return result
+    raw = _get_mtarr_ext_bytes(carriage)
+    if raw:
+        return _parse_carriage(raw)
+    return {}
 
 
-# ── Wire-format parsers ────────────────────────────────────────────────────
-
-
-def _parse_raw_unknown_fields(data: bytes) -> tuple[list[int], str, str]:
-    """Parse a flat sequence of protobuf unknown fields stored in _unknown_fields.
-
-    Returns (field_numbers_seen, track, train_status).
-    Used as a fallback for protobuf 4.x upb backend where UnknownFields() is empty.
-    """
-    field_numbers: list[int] = []
-    track = ""
-    train_status = ""
-    pos = 0
-    n = len(data)
-    while pos < n:
-        try:
-            tag, pos = _varint(data, pos)
-            field_num = tag >> 3
-            wire_type = tag & 0x7
-            field_numbers.append(field_num)
-            if wire_type == 2:  # length-delimited
-                length, pos = _varint(data, pos)
-                if length < 0 or pos + length > n:
-                    break
-                value_bytes = data[pos: pos + length]
-                pos += length
-                if field_num == _MTA_EXT_FIELD:
-                    t, s = _parse_track_and_status(bytes(value_bytes))
-                    if t:
-                        track = t
-                    if s:
-                        train_status = s
-            elif wire_type == 0:
-                _, pos = _varint(data, pos)
-            elif wire_type == 1:
-                pos += 8
-            elif wire_type == 5:
-                pos += 4
-            else:
-                break
-        except Exception:
-            break
-    return field_numbers, track, train_status
-
+# ── Wire-format parsers ────────────────────────────────────────────────────────
 
 def _parse_track_and_status(data: bytes) -> tuple[str, str]:
     """Parse MtaRailroadStopTimeUpdate: field 1 = track, field 2 = trainStatus."""
@@ -217,7 +130,7 @@ def _parse_track_and_status(data: bytes) -> tuple[str, str]:
                 length, pos = _varint(data, pos)
                 if length < 0 or pos + length > n:
                     break
-                raw = data[pos : pos + length]
+                raw = data[pos: pos + length]
                 pos += length
                 value = raw[:_MAX_STR_LEN].decode("utf-8", errors="replace")
                 if field_num == 1:
@@ -251,9 +164,11 @@ def _parse_carriage(data: bytes) -> dict[str, object]:
                     result["quiet_carriage"] = _QUIET.get(val, str(val))
                 elif field_num == 4:
                     result["toilet_facilities"] = _TOILET.get(val, str(val))
-            elif wire_type == 2:
+            elif wire_type == 2:  # length-delimited
                 length, pos = _varint(data, pos)
-                value = data[pos : pos + length].decode("utf-8", errors="replace")
+                if length < 0 or pos + length > n:
+                    break
+                value = data[pos: pos + length][:_MAX_STR_LEN].decode("utf-8", errors="replace")
                 pos += length
                 if field_num == 2:
                     result["carriage_class"] = value
@@ -281,7 +196,7 @@ def _varint(data: bytes, pos: int) -> tuple[int, int]:
 
 
 def _extract_field_bytes(data: bytes, target_field: int) -> bytes:
-    """Return the raw value bytes of the first length-delimited field matching target_field."""
+    """Return raw bytes of the first length-delimited field matching target_field."""
     pos = 0
     n = len(data)
     while pos < n:
@@ -312,15 +227,15 @@ def _extract_field_bytes(data: bytes, target_field: int) -> bytes:
 
 def _skip(data: bytes, pos: int, wire_type: int) -> int:
     """Advance pos past a field of the given wire type."""
-    if wire_type == 0:  # varint
+    if wire_type == 0:
         while data[pos] & 0x80:
             pos += 1
         return pos + 1
-    if wire_type == 1:  # 64-bit
+    if wire_type == 1:
         return pos + 8
-    if wire_type == 2:  # length-delimited
+    if wire_type == 2:
         length, pos = _varint(data, pos)
         return pos + length
-    if wire_type == 5:  # 32-bit
+    if wire_type == 5:
         return pos + 4
     raise ValueError(f"Unknown wire type {wire_type}")
