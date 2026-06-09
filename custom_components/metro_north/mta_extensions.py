@@ -105,6 +105,35 @@ def extract_stop_time_update_ext_raw(stu: object) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def extract_stop_time_update_ext_debug(stu: object) -> tuple[str, str, str]:
+    """Like extract_stop_time_update_ext but also returns raw MTARR extension bytes as hex.
+
+    Returns (track, trainStatus, raw_hex). raw_hex is "" when extension is absent.
+    """
+    # Try UnknownFields() API
+    try:
+        for uf in stu.UnknownFields():
+            if uf.field_number == _MTA_EXT_FIELD:
+                raw = uf.data
+                if isinstance(raw, (bytes, bytearray, memoryview)):
+                    b = bytes(raw)
+                    track, status = _parse_track_and_status(b)
+                    return track, status, b.hex()
+    except Exception:
+        pass
+    # Fallback: _unknown_fields bytes (protobuf 4.x upb backend)
+    try:
+        raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
+        if raw_bytes:
+            field_nums, track, status = _parse_raw_unknown_fields(bytes(raw_bytes))
+            # Extract just the MTARR extension bytes for the raw hex (re-parse to isolate)
+            mtarr_raw = _extract_field_bytes(bytes(raw_bytes), _MTA_EXT_FIELD)
+            return track, status, mtarr_raw.hex() if mtarr_raw else ""
+    except Exception as err:
+        _LOGGER.debug("MTARR StopTimeUpdate debug parse error: %s", err)
+    return "", "", ""
+
+
 def extract_carriage_details(carriage: object) -> dict[str, object]:
     """Return a dict with MtaRailroadCarriageDetails fields, or {} if absent."""
     result: dict[str, object] = {}
@@ -113,7 +142,16 @@ def extract_carriage_details(carriage: object) -> dict[str, object]:
             if uf.field_number == _MTA_EXT_FIELD:
                 raw = uf.data
                 if isinstance(raw, (bytes, bytearray, memoryview)):
-                    result = _parse_carriage(bytes(raw))
+                    return _parse_carriage(bytes(raw))
+    except Exception:
+        pass
+    # Fallback: _unknown_fields bytes
+    try:
+        raw_bytes = getattr(carriage, "_unknown_fields", b"") or b""
+        if raw_bytes:
+            mtarr_raw = _extract_field_bytes(bytes(raw_bytes), _MTA_EXT_FIELD)
+            if mtarr_raw:
+                return _parse_carriage(bytes(mtarr_raw))
     except Exception as err:
         _LOGGER.debug("MTARR CarriageDetails extension parse error: %s", err)
     return result

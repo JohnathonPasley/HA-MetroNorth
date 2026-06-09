@@ -19,7 +19,7 @@ from .const import (
     GTFS_RT_VEHICLES_URL,
 )
 from .gtfs_static import GTFSStaticManager
-from .mta_extensions import extract_carriage_details, extract_stop_time_update_ext, extract_stop_time_update_ext_raw
+from .mta_extensions import extract_carriage_details, extract_stop_time_update_ext, extract_stop_time_update_ext_debug
 from .mta_mercury import extract_mercury_alert, extract_mercury_entity_selector, get_translated_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -253,7 +253,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         # Compute position once per trip — same for all stops
         position = self._estimate_current_stop(tu.stop_time_update, now_ts)
         service_type = self._classify_service_type(static_stops)
-        if not service_type:
+        if not service_type and self._gtfs.is_loaded():
             service_type = self._classify_service_type_rt(tu.stop_time_update)
 
         # Pre-scan all stop_time_updates for MTARR track extension.
@@ -262,7 +262,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         trip_track = ""
         trip_ext_raw = ""
         for _stu in tu.stop_time_update:
-            t, _, raw = extract_stop_time_update_ext_raw(_stu)
+            t, _, raw = extract_stop_time_update_ext_debug(_stu)
             if t:
                 trip_track = t
                 trip_ext_raw = raw
@@ -397,6 +397,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             for cd in vp.multi_carriage_details:
                 entry: dict[str, object] = {
                     "id": cd.id,
+                    "label": cd.label,
                     "occupancy_status": cd.occupancy_status,
                 }
                 if cd.occupancy_percentage:
@@ -532,7 +533,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             dep_ts = stu.departure.time if stu.HasField("departure") and stu.departure.time else 0
             if not dep_ts:
                 dep_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else 0
-            if dep_ts and dep_ts >= now_ts - 120:
+            if dep_ts and dep_ts >= now_ts:
                 current_stop_id = stu.stop_id
                 current_stop_seq = stu.stop_sequence
                 break
