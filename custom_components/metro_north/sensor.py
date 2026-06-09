@@ -21,6 +21,7 @@ from .const import (
     ATTR_ESTIMATED_TIME,
     ATTR_HEADSIGN,
     ATTR_LINE,
+    ATTR_MTARR_RAW,
     ATTR_NEXT_STOP,
     ATTR_ORIGIN,
     ATTR_SCHEDULED_TIME,
@@ -266,6 +267,8 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
             attrs["latitude"] = t["latitude"]
         if t.get("longitude") is not None:
             attrs["longitude"] = t["longitude"]
+        if t.get("mtarr_raw"):
+            attrs[ATTR_MTARR_RAW] = t["mtarr_raw"]
         return attrs
 
 

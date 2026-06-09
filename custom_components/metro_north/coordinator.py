@@ -19,7 +19,7 @@ from .const import (
     GTFS_RT_VEHICLES_URL,
 )
 from .gtfs_static import GTFSStaticManager
-from .mta_extensions import extract_stop_time_update_ext
+from .mta_extensions import extract_carriage_details, extract_stop_time_update_ext, extract_stop_time_update_ext_raw
 from .mta_mercury import extract_mercury_alert, extract_mercury_entity_selector, get_translated_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 20
 _MAX_TRACK_LEN = 16
 _MAX_STATUS_LEN = 64
+_MAX_SYNTHESIZED = 150  # cap on synthesized vehicle positions to prevent HA overload
 
 # GTFS-RT Alert cause/effect enum → display string
 _ALERT_CAUSE = {
@@ -216,12 +217,17 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         # If the feed has no real VehiclePosition data (the vehicles endpoint is
         # frequently unavailable for Metro North), synthesize positions from
         # TripUpdate data using each trip's current/next stop lat/lon.
+        # Only synthesize for currently active trains (has past + future stops).
         if not vehicles and self._gtfs.is_loaded():
+            synth_count = 0
             for entity in feed.entity:
+                if synth_count >= _MAX_SYNTHESIZED:
+                    break
                 if entity.HasField("trip_update"):
                     v = self._synthesize_vehicle(entity.trip_update, entity.id, now_ts)
                     if v and v["vehicle_id"] not in vehicles:
                         vehicles[v["vehicle_id"]] = v
+                        synth_count += 1
 
         return stops, list(vehicles.values()), alerts
 
@@ -247,16 +253,22 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         # Compute position once per trip — same for all stops
         position = self._estimate_current_stop(tu.stop_time_update, now_ts)
         service_type = self._classify_service_type(static_stops)
+        if not service_type:
+            service_type = self._classify_service_type_rt(tu.stop_time_update)
 
         # Pre-scan all stop_time_updates for MTARR track extension.
         # Track is typically only present at departure stops (Grand Central),
         # so cache it and reuse for every stop of the same trip.
         trip_track = ""
+        trip_ext_raw = ""
         for _stu in tu.stop_time_update:
-            t, _ = extract_stop_time_update_ext(_stu)
+            t, _, raw = extract_stop_time_update_ext_raw(_stu)
             if t:
                 trip_track = t
+                trip_ext_raw = raw
                 break
+            elif raw and not trip_ext_raw:
+                trip_ext_raw = raw  # capture raw bytes even when track isn't set yet
 
         for stu in tu.stop_time_update:
             stop_id = stu.stop_id
@@ -291,7 +303,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     (s.track for s in static_stops if s.stop_id == stop_id and s.track),
                     "",
                 )
-            track = _sanitize(ext_track or trip_track or static_track or vehicle_label, _MAX_TRACK_LEN)
+            track = _sanitize(ext_track or trip_track or static_track, _MAX_TRACK_LEN)
             status = _sanitize(mta_status, _MAX_STATUS_LEN) if mta_status else _train_status(delay_minutes)
 
             minutes_until = (estimated_ts - now_ts) / 60
@@ -338,6 +350,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "departure_status": departure_status,
                     "latitude": position["lat"],
                     "longitude": position["lon"],
+                    "mtarr_raw": trip_ext_raw,
                     "all_stop_names": [s.stop_name for s in static_stops],
                     "trip_stops": (
                         self._build_upcoming_stops(static_stops, stu.stop_sequence)
@@ -377,6 +390,23 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         train_number = (
             self._gtfs.get_trip_short_name(trip_id) if self._gtfs.is_loaded() else ""
         ) or vp.vehicle.label or vp.vehicle.id or entity_id
+
+        # Extract MtaRailroadCarriageDetails from multi_carriage_details
+        carriages = []
+        try:
+            for cd in vp.multi_carriage_details:
+                entry: dict[str, object] = {
+                    "id": cd.id,
+                    "occupancy_status": cd.occupancy_status,
+                }
+                if cd.occupancy_percentage:
+                    entry["occupancy_percentage"] = cd.occupancy_percentage
+                mtarr_cd = extract_carriage_details(cd)
+                entry.update(mtarr_cd)
+                carriages.append(entry)
+        except Exception:
+            pass
+
         return {
             "vehicle_id": vp.vehicle.id or entity_id,
             "label": vp.vehicle.label or vp.vehicle.id or entity_id,
@@ -394,6 +424,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             "current_stop_sequence": vp.current_stop_sequence,
             "timestamp": vp.timestamp,
             "trip_stops": trip_stops,
+            "carriage_details": carriages,
         }
 
     def _parse_alert(
@@ -476,15 +507,31 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         static_trip_id = self._gtfs.resolve_trip_id(rt_trip_id)
         route_id = tu.trip.route_id
 
-        # Find the first stop that hasn't been departed yet.
+        # Only synthesize for trains that are currently running:
+        # at least one stop already departed AND at least one stop still ahead.
+        has_past = False
+        has_future = False
+        for stu in tu.stop_time_update:
+            dep_ts = stu.departure.time if stu.HasField("departure") and stu.departure.time else 0
+            if not dep_ts:
+                dep_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else 0
+            if dep_ts:
+                if dep_ts < now_ts:
+                    has_past = True
+                else:
+                    has_future = True
+            if has_past and has_future:
+                break
+        if not (has_past and has_future):
+            return None
+
+        # Find the first upcoming stop for current position.
         current_stop_id = None
         current_stop_seq = 0
         for stu in tu.stop_time_update:
-            dep_ts = 0
-            if stu.HasField("departure") and stu.departure.time:
-                dep_ts = stu.departure.time + (stu.departure.delay or 0)
-            elif stu.HasField("arrival") and stu.arrival.time:
-                dep_ts = stu.arrival.time + (stu.arrival.delay or 0)
+            dep_ts = stu.departure.time if stu.HasField("departure") and stu.departure.time else 0
+            if not dep_ts:
+                dep_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else 0
             if dep_ts and dep_ts >= now_ts - 120:
                 current_stop_id = stu.stop_id
                 current_stop_seq = stu.stop_sequence
@@ -622,9 +669,9 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         for stu in sorted_stus:
             dep_ts: float = 0
             if stu.HasField("departure") and stu.departure.time:
-                dep_ts = stu.departure.time + (stu.departure.delay or 0)
+                dep_ts = float(stu.departure.time)  # departure.time IS estimated; don't add delay
             elif stu.HasField("arrival") and stu.arrival.time:
-                dep_ts = stu.arrival.time + (stu.arrival.delay or 0)
+                dep_ts = float(stu.arrival.time)
             if dep_ts:
                 events.append((dep_ts, stu.stop_id, stu.stop_sequence))
 
@@ -753,6 +800,23 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         if stop_names & _LOCAL_INDICATOR_STOPS:
             return "Local"
         if not any(_SUPER_EXPRESS_STOP in name.lower() for name in stop_names):
+            return "Super Express"
+        return "Express"
+
+    def _classify_service_type_rt(self, stop_time_updates: Any) -> str:
+        """Classify service type from RT stop_time_updates when static GTFS trip isn't found.
+
+        Uses the same rules as _classify_service_type but resolves names via stop_id lookup.
+        """
+        stop_names: set[str] = set()
+        for stu in stop_time_updates:
+            if stu.stop_id:
+                stop_names.add(self._stop_name(stu.stop_id).lower())
+        if not stop_names:
+            return ""
+        if stop_names & {"woodlawn", "bronxville", "tuckahoe"}:
+            return "Local"
+        if not any(_SUPER_EXPRESS_STOP in n for n in stop_names):
             return "Super Express"
         return "Express"
 
