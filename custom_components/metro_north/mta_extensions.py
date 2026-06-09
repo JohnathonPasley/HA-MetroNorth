@@ -23,6 +23,8 @@ import logging
 _LOGGER = logging.getLogger(__name__)
 
 _MTA_EXT_FIELD = 1005  # extension field number on both StopTimeUpdate and CarriageDetails
+_MAX_STR_LEN = 256   # cap on any single extension string to prevent large allocations
+_MAX_VARINT_SHIFT = 63  # protobuf varints are at most 64-bit
 
 
 def diagnose_stop_time_update(stu: object) -> dict:
@@ -68,25 +70,39 @@ def extract_stop_time_update_ext(stu: object) -> tuple[str, str]:
 
     Returns ("", "") when the extension is absent or unparseable.
     """
+    track, status, _ = extract_stop_time_update_ext_raw(stu)
+    return track, status
+
+
+def extract_stop_time_update_ext_raw(stu: object) -> tuple[str, str, str]:
+    """Return (track, trainStatus, raw_hex) from MtaRailroadStopTimeUpdate.
+
+    raw_hex is the hex encoding of the MTARR extension's embedded message bytes;
+    empty string when the extension is absent or unparseable.
+    """
     # Try UnknownFields() API first (pure Python / older protobuf)
     try:
         for uf in stu.UnknownFields():
             if uf.field_number == _MTA_EXT_FIELD:
                 raw = uf.data
                 if isinstance(raw, (bytes, bytearray, memoryview)):
-                    return _parse_track_and_status(bytes(raw))
+                    raw_b = bytes(raw)
+                    track, status = _parse_track_and_status(raw_b)
+                    return track, status, raw_b.hex()
     except Exception:
         pass
     # Fallback: parse raw _unknown_fields bytes (protobuf 4.x upb C backend)
     try:
         raw_bytes = getattr(stu, "_unknown_fields", b"") or b""
         if raw_bytes:
-            _, track, status = _parse_raw_unknown_fields(bytes(raw_bytes))
-            if track or status:
-                return track, status
+            rb = bytes(raw_bytes)
+            _, track, status = _parse_raw_unknown_fields(rb)
+            ext_raw = _extract_field_bytes(rb, _MTA_EXT_FIELD)
+            if ext_raw or track or status:
+                return track, status, ext_raw.hex()
     except Exception as err:
         _LOGGER.debug("MTARR StopTimeUpdate extension parse error: %s", err)
-    return "", ""
+    return "", "", ""
 
 
 def extract_carriage_details(carriage: object) -> dict[str, object]:
@@ -125,6 +141,8 @@ def _parse_raw_unknown_fields(data: bytes) -> tuple[list[int], str, str]:
             field_numbers.append(field_num)
             if wire_type == 2:  # length-delimited
                 length, pos = _varint(data, pos)
+                if length < 0 or pos + length > n:
+                    break
                 value_bytes = data[pos: pos + length]
                 pos += length
                 if field_num == _MTA_EXT_FIELD:
@@ -159,8 +177,11 @@ def _parse_track_and_status(data: bytes) -> tuple[str, str]:
             wire_type = tag & 0x7
             if wire_type == 2:  # length-delimited (string / bytes)
                 length, pos = _varint(data, pos)
-                value = data[pos : pos + length].decode("utf-8", errors="replace")
+                if length < 0 or pos + length > n:
+                    break
+                raw = data[pos : pos + length]
                 pos += length
+                value = raw[:_MAX_STR_LEN].decode("utf-8", errors="replace")
                 if field_num == 1:
                     track = value
                 elif field_num == 2:
@@ -209,12 +230,46 @@ def _varint(data: bytes, pos: int) -> tuple[int, int]:
     """Decode a protobuf varint; return (value, new_pos)."""
     result = shift = 0
     while True:
+        if pos >= len(data):
+            raise ValueError("Truncated varint")
         b = data[pos]
         pos += 1
         result |= (b & 0x7F) << shift
         if not (b & 0x80):
             return result, pos
         shift += 7
+        if shift > _MAX_VARINT_SHIFT:
+            raise ValueError("Varint overflow")
+
+
+def _extract_field_bytes(data: bytes, target_field: int) -> bytes:
+    """Return the raw value bytes of the first length-delimited field matching target_field."""
+    pos = 0
+    n = len(data)
+    while pos < n:
+        try:
+            tag, pos = _varint(data, pos)
+            field_num = tag >> 3
+            wire_type = tag & 0x7
+            if wire_type == 2:
+                length, pos = _varint(data, pos)
+                if length < 0 or pos + length > n:
+                    break
+                value = data[pos: pos + length]
+                pos += length
+                if field_num == target_field:
+                    return value
+            elif wire_type == 0:
+                _, pos = _varint(data, pos)
+            elif wire_type == 1:
+                pos += 8
+            elif wire_type == 5:
+                pos += 4
+            else:
+                break
+        except Exception:
+            break
+    return b""
 
 
 def _skip(data: bytes, pos: int, wire_type: int) -> int:

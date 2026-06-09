@@ -14,12 +14,15 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     ATTR_BEARING,
+    ATTR_CARRIAGE_DETAILS,
     ATTR_HEADSIGN,
     ATTR_LINE,
     ATTR_SPEED,
     ATTR_TRAIN_NUMBER,
     ATTR_TRIP_STOPS,
     ATTR_VEHICLE_ID,
+    CONF_SHOW_VEHICLES,
+    DEFAULT_SHOW_VEHICLES,
     DOMAIN,
 )
 from .coordinator import MetroNorthCoordinator
@@ -68,6 +71,9 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    config = {**entry.data, **entry.options}
+    if not config.get(CONF_SHOW_VEHICLES, DEFAULT_SHOW_VEHICLES):
+        return
     coordinator: MetroNorthCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     seen: set[str] = set()
@@ -191,7 +197,7 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
             elif isinstance(s, dict):
                 trip_stops.append(s)
 
-        return {
+        attrs = {
             ATTR_VEHICLE_ID: v.get("vehicle_id"),
             ATTR_TRAIN_NUMBER: v.get("train_number") or v.get("label") or v.get("trip_id"),
             "trip_id": v.get("trip_id"),
@@ -203,3 +209,6 @@ class TrainVehicleTracker(CoordinatorEntity[MetroNorthCoordinator], TrackerEntit
             "current_stop_sequence": v.get("current_stop_sequence"),
             ATTR_TRIP_STOPS: trip_stops,
         }
+        if v.get("carriage_details"):
+            attrs[ATTR_CARRIAGE_DETAILS] = v["carriage_details"]
+        return attrs

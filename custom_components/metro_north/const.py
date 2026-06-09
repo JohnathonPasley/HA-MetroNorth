@@ -15,6 +15,8 @@ DIRECTION_OUTBOUND = "outbound"  # away from Grand Central Terminal
 
 # Defaults
 DEFAULT_NUM_TRAINS = 3
+CONF_SHOW_VEHICLES = "show_vehicles"
+DEFAULT_SHOW_VEHICLES = True
 CONF_PEAK_1_START = "peak_1_start"
 CONF_PEAK_1_END = "peak_1_end"
 CONF_PEAK_1_INTERVAL = "peak_1_interval"
@@ -70,6 +72,8 @@ ATTR_SERVICE_TYPE = "service_type"
 ATTR_DEPARTURE_STATUS = "departure_status"
 ATTR_STOPS_TO_STATION = "stops_to_station"
 ATTR_NEXT_STOP = "next_stop"
+ATTR_MTARR_RAW = "mtarr_raw"
+ATTR_CARRIAGE_DETAILS = "carriage_details"
 
 CONF_LOCAL_STOP_INDICATORS = "local_stop_indicators"
 CONF_ROUTES = "routes"
