@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import slugify
 
 from .const import (
@@ -35,7 +36,7 @@ from .gtfs_static import GTFSStaticManager
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "device_tracker"]
+PLATFORMS = ["sensor"]
 _STATION_ZONES_KEY = "_station_zones"
 _GTFS_MANAGER_KEY = "_gtfs_manager"
 
@@ -126,6 +127,17 @@ async def _async_setup_zones(hass: HomeAssistant, gtfs_static) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
+
+    # Remove stale device_tracker entities created by the now-removed vehicle tracker feature
+    entity_reg = er.async_get(hass)
+    stale_trackers = [
+        e for e in er.async_entries_for_config_entry(entity_reg, entry.entry_id)
+        if e.domain == "device_tracker"
+    ]
+    for stale in stale_trackers:
+        entity_reg.async_remove(stale.entity_id)
+    if stale_trackers:
+        _LOGGER.info("Cleaned up %d stale device_tracker entities", len(stale_trackers))
 
     # Merge entry.data + entry.options (options override on re-configure)
     config = {**entry.data, **entry.options}
