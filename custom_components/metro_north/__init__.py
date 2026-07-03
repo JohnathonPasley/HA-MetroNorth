@@ -159,6 +159,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
+    # Start the self-managing poll loop (sleeps between peak windows automatically)
+    coordinator.start_polling()
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -198,6 +201,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    if isinstance(coordinator, MetroNorthCoordinator):
+        coordinator.stop_polling()
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
