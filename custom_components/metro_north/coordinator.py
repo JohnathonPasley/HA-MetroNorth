@@ -16,10 +16,9 @@ from .const import (
     FALLBACK_STATIONS,
     GTFS_RT_ALERTS_URL,
     GTFS_RT_URL,
-    GTFS_RT_VEHICLES_URL,
 )
 from .gtfs_static import GTFSStaticManager
-from .mta_extensions import extract_carriage_details, extract_stop_time_update_ext, extract_stop_time_update_ext_debug
+from .mta_extensions import extract_stop_time_update_ext, extract_stop_time_update_ext_debug
 from .mta_mercury import extract_mercury_alert, extract_mercury_entity_selector, get_translated_text
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,7 +26,6 @@ _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 20
 _MAX_TRACK_LEN = 16
 _MAX_STATUS_LEN = 64
-_MAX_SYNTHESIZED = 150  # cap on synthesized vehicle positions to prevent HA overload
 
 # GTFS-RT Alert cause/effect enum → display string
 _ALERT_CAUSE = {
@@ -159,7 +157,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Static GTFS refresh failed (non-fatal): %s", err)
 
         try:
-            trip_data, vehicle_data, alert_data = await self.hass.async_add_executor_job(
+            trip_data, alert_data = await self.hass.async_add_executor_job(
                 self._fetch_all_rt
             )
         except requests.RequestException as err:
@@ -167,16 +165,14 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
 
         return {
             "trip_updates": trip_data,
-            "vehicles": vehicle_data,
             "service_alerts": alert_data,
             "last_updated": datetime.now(timezone.utc),
         }
 
     # ── Combined GTFS-RT fetch ─────────────────────────────────────────────
 
-    def _fetch_all_rt(self) -> tuple[dict[str, list], list[dict], dict[str, list]]:
-        """Fetch main feed; parse trip updates, vehicle positions, and service alerts.
-        Then supplement with the dedicated vehicle feed if available."""
+    def _fetch_all_rt(self) -> tuple[dict[str, list], dict[str, list]]:
+        """Fetch main feed; parse trip updates and service alerts."""
         response = requests.get(GTFS_RT_URL, headers=self._headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
@@ -192,17 +188,12 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             else set(FALLBACK_STATIONS.keys())
         )
         stops: dict[str, list] = {sid: [] for sid in known_stops}
-        vehicles: dict[str, dict] = {}  # vehicle_id → vehicle dict (dedup)
 
         now_ts = datetime.now(timezone.utc).timestamp()
 
         for entity in feed.entity:
             if entity.HasField("trip_update"):
                 self._parse_trip_update(entity.trip_update, stops, now_ts, entity.id)
-            if entity.HasField("vehicle"):
-                v = self._parse_vehicle_entity(entity.vehicle, entity.id)
-                if v:
-                    vehicles[v["vehicle_id"]] = v
 
         # Fetch alerts from the dedicated Metro North alerts endpoint
         alerts = self._fetch_alerts_rt(now_ts)
@@ -211,25 +202,7 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         for sid in stops:
             stops[sid].sort(key=lambda x: x["estimated_time"])
 
-        # Supplement with dedicated vehicle feed (may fail silently)
-        self._supplement_vehicles(vehicles)
-
-        # If the feed has no real VehiclePosition data (the vehicles endpoint is
-        # frequently unavailable for Metro North), synthesize positions from
-        # TripUpdate data using each trip's current/next stop lat/lon.
-        # Only synthesize for currently active trains (has past + future stops).
-        if not vehicles and self._gtfs.is_loaded():
-            synth_count = 0
-            for entity in feed.entity:
-                if synth_count >= _MAX_SYNTHESIZED:
-                    break
-                if entity.HasField("trip_update"):
-                    v = self._synthesize_vehicle(entity.trip_update, entity.id, now_ts)
-                    if v and v["vehicle_id"] not in vehicles:
-                        vehicles[v["vehicle_id"]] = v
-                        synth_count += 1
-
-        return stops, list(vehicles.values()), alerts
+        return stops, alerts
 
     def _parse_trip_update(
         self,
@@ -360,74 +333,6 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                 }
             )
 
-    def _parse_vehicle_entity(self, vp: Any, entity_id: str) -> dict | None:
-        try:
-            lat = vp.position.latitude
-            lon = vp.position.longitude
-        except Exception:
-            return None
-        if lat == 0.0 and lon == 0.0:
-            return None
-
-        trip_id = vp.trip.trip_id if vp.HasField("trip") else ""
-        route_id = vp.trip.route_id if vp.HasField("trip") else ""
-        current_stop_id = vp.stop_id or ""
-        current_stop_name = (
-            self._gtfs.get_stop_name(current_stop_id)
-            if self._gtfs.is_loaded()
-            else FALLBACK_STATIONS.get(current_stop_id, current_stop_id)
-        )
-        raw_stops = self._gtfs.get_trip_stops(trip_id) if self._gtfs.is_loaded() else []
-        trip_stops = [
-            {
-                "stop_sequence": s.stop_sequence,
-                "stop_name": s.stop_name,
-                "arrival": s.arrival_time,
-                "departure": s.departure_time,
-            }
-            for s in raw_stops
-        ]
-        train_number = (
-            self._gtfs.get_trip_short_name(trip_id) if self._gtfs.is_loaded() else ""
-        ) or vp.vehicle.label or vp.vehicle.id or entity_id
-
-        # Extract MtaRailroadCarriageDetails from multi_carriage_details
-        carriages = []
-        try:
-            for cd in vp.multi_carriage_details:
-                entry: dict[str, object] = {
-                    "id": cd.id,
-                    "label": cd.label,
-                    "occupancy_status": cd.occupancy_status,
-                }
-                if cd.occupancy_percentage:
-                    entry["occupancy_percentage"] = cd.occupancy_percentage
-                mtarr_cd = extract_carriage_details(cd)
-                entry.update(mtarr_cd)
-                carriages.append(entry)
-        except Exception:
-            pass
-
-        return {
-            "vehicle_id": vp.vehicle.id or entity_id,
-            "label": vp.vehicle.label or vp.vehicle.id or entity_id,
-            "train_number": train_number,
-            "trip_id": trip_id,
-            "route_id": route_id,
-            "route_name": self._gtfs.get_route_name(route_id) if self._gtfs.is_loaded() else route_id,
-            "headsign": self._get_headsign(trip_id),
-            "latitude": lat,
-            "longitude": lon,
-            "bearing": vp.position.bearing,
-            "speed": round(vp.position.speed * 2.237, 1) if vp.position.speed else 0,
-            "current_stop_id": current_stop_id,
-            "current_stop_name": current_stop_name,
-            "current_stop_sequence": vp.current_stop_sequence,
-            "timestamp": vp.timestamp,
-            "trip_stops": trip_stops,
-            "carriage_details": carriages,
-        }
-
     def _parse_alert(
         self,
         alert: Any,
@@ -495,91 +400,6 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
             alerts["_all"] = []
         alerts["_all"].append(alert_dict)
 
-    def _synthesize_vehicle(self, tu: Any, entity_id: str, now_ts: float) -> dict | None:
-        """Build an approximate vehicle from TripUpdate + static GTFS stop coordinates.
-
-        Used when no real VehiclePosition data is available.  The pin appears at
-        the train's current or next scheduled stop.
-        """
-        if not self._gtfs.is_loaded():
-            return None
-
-        rt_trip_id = tu.trip.trip_id
-        static_trip_id = self._gtfs.resolve_trip_id(rt_trip_id)
-        route_id = tu.trip.route_id
-
-        # Only synthesize for trains that are currently running:
-        # at least one stop already departed AND at least one stop still ahead.
-        has_past = False
-        has_future = False
-        for stu in tu.stop_time_update:
-            dep_ts = stu.departure.time if stu.HasField("departure") and stu.departure.time else 0
-            if not dep_ts:
-                dep_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else 0
-            if dep_ts:
-                if dep_ts < now_ts:
-                    has_past = True
-                else:
-                    has_future = True
-            if has_past and has_future:
-                break
-        if not (has_past and has_future):
-            return None
-
-        # Find the first upcoming stop for current position.
-        current_stop_id = None
-        current_stop_seq = 0
-        for stu in tu.stop_time_update:
-            dep_ts = stu.departure.time if stu.HasField("departure") and stu.departure.time else 0
-            if not dep_ts:
-                dep_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else 0
-            if dep_ts and dep_ts >= now_ts:
-                current_stop_id = stu.stop_id
-                current_stop_seq = stu.stop_sequence
-                break
-
-        if not current_stop_id:
-            return None
-
-        stop_info = self._gtfs.data.stops.get(current_stop_id)
-        if not stop_info or (stop_info.lat == 0.0 and stop_info.lon == 0.0):
-            return None
-
-        vehicle_id = (tu.vehicle.id if tu.HasField("vehicle") and tu.vehicle.id else entity_id or rt_trip_id)
-        vehicle_label = (tu.vehicle.label if tu.HasField("vehicle") and tu.vehicle.label else entity_id or rt_trip_id)
-
-        raw_stops = self._gtfs.get_trip_stops(static_trip_id)
-        trip_stops = [
-            {
-                "stop_sequence": s.stop_sequence,
-                "stop_name": s.stop_name,
-                "arrival": s.arrival_time,
-                "departure": s.departure_time,
-            }
-            for s in raw_stops
-        ]
-
-        # entity_id = human-readable train number per MTA developer docs
-        train_number = entity_id or vehicle_label
-        return {
-            "vehicle_id": _sanitize(vehicle_id, 64),
-            "label": _sanitize(vehicle_label, _MAX_TRACK_LEN),
-            "train_number": _sanitize(train_number, _MAX_TRACK_LEN),
-            "trip_id": rt_trip_id,
-            "route_id": route_id,
-            "route_name": self._gtfs.get_route_name(route_id),
-            "headsign": self._get_headsign(static_trip_id),
-            "latitude": stop_info.lat,
-            "longitude": stop_info.lon,
-            "bearing": 0,
-            "speed": 0,
-            "current_stop_id": current_stop_id,
-            "current_stop_name": stop_info.name,
-            "current_stop_sequence": current_stop_seq,
-            "timestamp": int(now_ts),
-            "trip_stops": trip_stops,
-        }
-
     def _fetch_alerts_rt(self, now_ts: float) -> dict[str, list]:
         """Fetch service alerts from the dedicated Metro North alerts endpoint."""
         alerts: dict[str, list] = {}
@@ -596,23 +416,6 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.debug("Metro North alerts feed unavailable: %s", err)
         return alerts
-
-    def _supplement_vehicles(self, vehicles: dict[str, dict]) -> None:
-        """Try the dedicated vehicle feed and merge any new positions found."""
-        try:
-            resp = requests.get(
-                GTFS_RT_VEHICLES_URL, headers=self._headers, timeout=REQUEST_TIMEOUT
-            )
-            resp.raise_for_status()
-            feed = gtfs_realtime_pb2.FeedMessage()
-            feed.ParseFromString(resp.content)
-            for entity in feed.entity:
-                if entity.HasField("vehicle"):
-                    v = self._parse_vehicle_entity(entity.vehicle, entity.id)
-                    if v and v["vehicle_id"] not in vehicles:
-                        vehicles[v["vehicle_id"]] = v
-        except Exception as err:
-            _LOGGER.debug("Dedicated vehicle feed unavailable: %s", err)
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
