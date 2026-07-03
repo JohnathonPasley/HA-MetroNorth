@@ -27,6 +27,7 @@ _LOGGER = logging.getLogger(__name__)
 REQUEST_TIMEOUT = 20
 _MAX_TRACK_LEN = 16
 _MAX_STATUS_LEN = 64
+_MAX_TRIP_STOPS = 50  # cap trip_stops list stored per train to bound coordinator RAM
 
 # GTFS-RT Alert cause/effect enum → display string
 _ALERT_CAUSE = {
@@ -390,12 +391,11 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
                     "latitude": position["lat"],
                     "longitude": position["lon"],
                     "mtarr_raw": trip_ext_raw,
-                    "all_stop_names": [s.stop_name for s in static_stops],
                     "trip_stops": (
                         self._build_upcoming_stops(static_stops, stu.stop_sequence)
                         if static_stops
                         else self._build_rt_stops(tu.stop_time_update, stu.stop_sequence)
-                    ),
+                    )[:_MAX_TRIP_STOPS],
                 }
             )
 

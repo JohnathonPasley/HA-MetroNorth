@@ -164,7 +164,7 @@ def _train_attrs_summary(t: dict[str, Any]) -> dict[str, Any]:
 
 def _train_attrs(t: dict[str, Any]) -> dict[str, Any]:
     """Build the common attribute dict for one train."""
-    stops_raw = t.get("trip_stops", [])[:MAX_TRIP_STOPS]
+    stops_raw = t.get("trip_stops", [])
     trip_stops = [
         {
             "stop_name": s.get("stop_name", ""),
