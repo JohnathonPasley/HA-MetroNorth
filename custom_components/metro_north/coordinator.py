@@ -9,6 +9,7 @@ import requests
 from google.transit import gtfs_realtime_pb2
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -115,7 +116,12 @@ def _infer_direction(destination: str) -> int:
 
 
 class MetroNorthCoordinator(DataUpdateCoordinator):
-    """Coordinator — fetches GTFS-RT, parses trips + vehicles, adjusts poll rate."""
+    """Coordinator — fetches GTFS-RT on a self-managed schedule.
+
+    When peak windows are configured, polls only during those windows and sleeps
+    between them (zero API calls off-hours). Falls back to continuous polling at
+    default_interval when no peak windows are defined.
+    """
 
     def __init__(
         self,
@@ -128,27 +134,87 @@ class MetroNorthCoordinator(DataUpdateCoordinator):
         self._headers: dict[str, str] = {}
         self._default_interval = default_interval
         self._peak_windows = peak_windows
+        self._unsub_poll: Any = None
 
+        # update_interval=None: HA's built-in scheduler is disabled.
+        # We manage our own schedule via async_call_later so we can sleep
+        # between peak windows without any timer overhead.
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=self._get_current_interval()),
+            update_interval=None,
         )
 
-    def _get_current_interval(self) -> int:
+    # ── Polling lifecycle ──────────────────────────────────────────────────
+
+    def start_polling(self) -> None:
+        """Start the self-scheduling poll loop. Call once after first refresh."""
+        self._schedule_next_poll()
+
+    def stop_polling(self) -> None:
+        """Cancel any pending scheduled poll."""
+        if self._unsub_poll:
+            self._unsub_poll()
+            self._unsub_poll = None
+
+    def _get_current_interval(self) -> int | None:
+        """Return poll interval in seconds for right now, or None to sleep.
+
+        None means we are between peak windows; _schedule_next_poll will
+        compute the exact wake-up time so polling resumes automatically.
+        """
         now = datetime.now().time()
         for window in self._peak_windows:
             if window.is_active(now):
                 return window.interval
+        # Outside all peak windows: sleep if any windows are defined,
+        # otherwise fall back to continuous polling at the default rate.
+        if self._peak_windows:
+            return None
         return self._default_interval
 
-    async def _async_refresh(self, **kwargs) -> None:
-        new_interval = timedelta(seconds=self._get_current_interval())
-        if new_interval != self.update_interval:
-            _LOGGER.debug("Metro North poll interval → %s s", new_interval.total_seconds())
-            self.update_interval = new_interval
-        await super()._async_refresh(**kwargs)
+    def _seconds_until_next_window(self) -> int:
+        """Seconds until the earliest upcoming peak window starts."""
+        now_dt = datetime.now()
+        for days_ahead in range(8):
+            check_dt = now_dt + timedelta(days=days_ahead)
+            check_day = check_dt.weekday()
+            best_today: datetime | None = None
+            for window in self._peak_windows:
+                if window.days and check_day not in window.days:
+                    continue
+                candidate = check_dt.replace(
+                    hour=window.start.hour,
+                    minute=window.start.minute,
+                    second=0,
+                    microsecond=0,
+                )
+                if candidate <= now_dt:
+                    continue
+                if best_today is None or candidate < best_today:
+                    best_today = candidate
+            if best_today is not None:
+                return max(60, int((best_today - now_dt).total_seconds()))
+        return 3600  # no window found in next 8 days — check again in an hour
+
+    def _schedule_next_poll(self) -> None:
+        """Schedule the next poll or window-wake using async_call_later."""
+        self.stop_polling()
+        interval = self._get_current_interval()
+        if interval is not None:
+            delay = interval
+            _LOGGER.debug("Metro North: next poll in %ds (active window)", delay)
+        else:
+            delay = self._seconds_until_next_window()
+            _LOGGER.debug("Metro North: sleeping %ds until next active window", delay)
+
+        async def _cb(_now: Any) -> None:
+            self._unsub_poll = None
+            await self.async_refresh()
+            self._schedule_next_poll()
+
+        self._unsub_poll = async_call_later(self.hass, delay, _cb)
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
