@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import csv
-import io
 import logging
+import os
 import re
+import tempfile
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -23,7 +24,7 @@ _TRACK_COLS_STOP_TIMES = ("track", "arrival_platform", "departure_platform", "pl
 _TRACK_COLS_STOPS = ("platform_code", "stop_code", "track")
 
 
-@dataclass
+@dataclass(slots=True)
 class StopInfo:
     stop_id: str
     name: str
@@ -32,7 +33,7 @@ class StopInfo:
     platform_code: str = ""  # from platform_code / stop_code in stops.txt
 
 
-@dataclass
+@dataclass(slots=True)
 class StopTimeInfo:
     stop_sequence: int
     stop_id: str
@@ -44,14 +45,14 @@ class StopTimeInfo:
     drop_off_type: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class ServiceCalendar:
     days: frozenset  # weekday ints 0=Mon..6=Sun the service runs
     start_date: str  # YYYYMMDD
     end_date: str    # YYYYMMDD
 
 
-@dataclass
+@dataclass(slots=True)
 class TripInfo:
     trip_id: str
     route_id: str
@@ -98,17 +99,25 @@ class GTFSStaticManager:
 
     def _fetch_and_parse(self) -> None:
         _LOGGER.info("Downloading Metro North static GTFS from %s", GTFS_STATIC_URL)
+        tmp_path: str | None = None
         try:
-            resp = requests.get(GTFS_STATIC_URL, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
+            # Stream directly to a temp file so we never hold the full zip in RAM.
+            with requests.get(GTFS_STATIC_URL, timeout=REQUEST_TIMEOUT, stream=True) as resp:
+                resp.raise_for_status()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+                    tmp_path = tmp.name
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        tmp.write(chunk)
         except requests.RequestException as err:
             _LOGGER.error("Failed to download static GTFS: %s", err)
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
             return
 
         data = GTFSStaticData()
 
         try:
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            with zipfile.ZipFile(tmp_path) as zf:
                 names = zf.namelist()
 
                 if "stops.txt" in names:
@@ -221,6 +230,9 @@ class GTFSStaticManager:
         except Exception as err:
             _LOGGER.error("Error parsing static GTFS ZIP: %s", err)
             return
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
         data.last_updated = datetime.now(timezone.utc)
         self.data = data
