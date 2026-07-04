@@ -222,6 +222,9 @@ class _StationBase(CoordinatorEntity[MetroNorthCoordinator]):
 class TrainAtPositionSensor(_StationBase, SensorEntity):
     """The Nth upcoming train (after direction filter) at a station."""
 
+    # Large lists and debug hex have no historical value; exclude from recorder DB.
+    _unrecorded_attributes = frozenset({ATTR_TRIP_STOPS, ATTR_MTARR_RAW})
+
     def __init__(
         self,
         coordinator: MetroNorthCoordinator,
@@ -273,6 +276,9 @@ class TrainAtPositionSensor(_StationBase, SensorEntity):
 
 class UpcomingTrainsSensor(_StationBase, SensorEntity):
     """Count + full list of upcoming trains at a station."""
+
+    # The count (native_value) is worth recording; the full list attribute is not.
+    _unrecorded_attributes = frozenset({ATTR_UPCOMING_TRAINS})
 
     def __init__(
         self,
@@ -354,6 +360,9 @@ class TrainDepartureStatusSensor(_StationBase, SensorEntity):
 
 class ServiceAlertSensor(_StationBase, SensorEntity):
     """Active service alert count + details for a station."""
+
+    # Alert count (native_value) is worth recording; the full detail list is not.
+    _unrecorded_attributes = frozenset({ATTR_SERVICE_ALERTS})
 
     def __init__(
         self,

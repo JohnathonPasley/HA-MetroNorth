@@ -71,6 +71,8 @@ ATTR_MTARR_RAW = "mtarr_raw"
 
 CONF_LOCAL_STOP_INDICATORS = "local_stop_indicators"
 CONF_ROUTES = "routes"
+CONF_HISTORY_DAYS = "history_days"
+DEFAULT_HISTORY_DAYS = 3  # days of recorder history to retain per entity
 
 # Known Metro North route name fragments for filtering
 METRO_NORTH_ROUTE_OPTIONS = [
