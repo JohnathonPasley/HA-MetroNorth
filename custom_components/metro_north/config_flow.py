@@ -24,8 +24,10 @@ from .const import (
     CONF_PEAK_2_END,
     CONF_PEAK_2_INTERVAL,
     CONF_PEAK_2_START,
+    CONF_HISTORY_DAYS,
     CONF_ROUTES,
     CONF_STATIONS,
+    DEFAULT_HISTORY_DAYS,
     DEFAULT_NUM_TRAINS,
     DEFAULT_OFF_PEAK_INTERVAL,
     DEFAULT_PEAK_1_END,
@@ -243,6 +245,14 @@ class OptionsFlow(config_entries.OptionsFlow):
                         options=METRO_NORTH_ROUTE_OPTIONS,
                         multiple=True,
                         mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Optional(
+                    CONF_HISTORY_DAYS,
+                    default=int(current.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS)),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=30, step=1, unit_of_measurement="days"
                     )
                 ),
                 **_schedule_fields(current),

@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import slugify
 
 from .const import (
     CONF_DEFAULT_INTERVAL,
+    CONF_HISTORY_DAYS,
     CONF_PEAK_1_DAYS,
     CONF_PEAK_1_END,
     CONF_PEAK_1_INTERVAL,
@@ -20,6 +25,7 @@ from .const import (
     CONF_PEAK_2_END,
     CONF_PEAK_2_INTERVAL,
     CONF_PEAK_2_START,
+    DEFAULT_HISTORY_DAYS,
     DEFAULT_OFF_PEAK_INTERVAL,
     DEFAULT_PEAK_1_END,
     DEFAULT_PEAK_1_START,
@@ -39,6 +45,34 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 _STATION_ZONES_KEY = "_station_zones"
 _GTFS_MANAGER_KEY = "_gtfs_manager"
+_PURGE_UNSUB_KEY = "_purge_unsub"
+
+
+async def _async_purge_recorder(hass: HomeAssistant, entry: ConfigEntry, keep_days: int) -> None:
+    """Purge Metro North entity history older than keep_days via recorder.purge_entities."""
+    if not hass.services.has_service("recorder", "purge_entities"):
+        _LOGGER.debug("recorder.purge_entities unavailable; skipping purge")
+        return
+    entity_reg = er.async_get(hass)
+    entity_ids = [
+        e.entity_id
+        for e in er.async_entries_for_config_entry(entity_reg, entry.entry_id)
+    ]
+    if not entity_ids:
+        return
+    try:
+        await hass.services.async_call(
+            "recorder",
+            "purge_entities",
+            {"entity_id": entity_ids, "keep_days": keep_days},
+            blocking=True,
+        )
+        _LOGGER.info(
+            "Purged Metro North recorder history older than %d days (%d entities)",
+            keep_days, len(entity_ids),
+        )
+    except Exception as err:
+        _LOGGER.debug("Recorder purge non-fatal error: %s", err)
 
 
 async def _async_create_station_zones(hass: HomeAssistant, gtfs_static) -> set[str]:
@@ -166,6 +200,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # ── Recorder retention ─────────────────────────────────────────────────
+    keep_days = int(config.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS))
+
+    # Run an initial purge shortly after setup to trim any existing excess history.
+    async def _initial_purge(_event: Any) -> None:
+        await _async_purge_recorder(hass, entry, keep_days)
+
+    if hass.is_running:
+        hass.async_create_task(_async_purge_recorder(hass, entry, keep_days))
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _initial_purge)
+
+    # Schedule a daily purge to keep the DB trimmed automatically.
+    unsub_purge = async_track_time_interval(
+        hass,
+        lambda _now: hass.async_create_task(_async_purge_recorder(hass, entry, keep_days)),
+        timedelta(hours=24),
+    )
+    hass.data[DOMAIN].setdefault(_PURGE_UNSUB_KEY, {})[entry.entry_id] = unsub_purge
+
+    # Register manual purge service (once per domain load).
+    if not hass.services.has_service(DOMAIN, "purge_history"):
+        async def _handle_purge(call) -> None:  # type: ignore[type-arg]
+            days = int(call.data.get("keep_days", DEFAULT_HISTORY_DAYS))
+            for eid in list(hass.data.get(DOMAIN, {}).keys()):
+                coord = hass.data[DOMAIN].get(eid)
+                if isinstance(coord, MetroNorthCoordinator):
+                    cfg_entry = hass.config_entries.async_get_entry(eid)
+                    if cfg_entry:
+                        await _async_purge_recorder(hass, cfg_entry, days)
+
+        hass.services.async_register(
+            DOMAIN, "purge_history", _handle_purge,
+            schema=vol.Schema({vol.Optional("keep_days", default=DEFAULT_HISTORY_DAYS): vol.Coerce(int)}),
+        )
+
     # Register manual GTFS refresh service (once; safe to call on every entry load)
     if not hass.services.has_service(DOMAIN, "update_gtfs"):
         async def _handle_update_gtfs(call) -> None:  # type: ignore[type-arg]
@@ -204,6 +274,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = hass.data[DOMAIN].get(entry.entry_id)
     if isinstance(coordinator, MetroNorthCoordinator):
         coordinator.stop_polling()
+    # Cancel daily purge timer
+    unsub = hass.data[DOMAIN].get(_PURGE_UNSUB_KEY, {}).pop(entry.entry_id, None)
+    if unsub:
+        unsub()
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
