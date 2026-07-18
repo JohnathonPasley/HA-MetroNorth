@@ -1,0 +1,25 @@
+update_gtfs:
+  name: Update GTFS Static Data
+  description: >
+    Force-download fresh Metro North schedule data (stops, trips, timetables)
+    and reload all config entries. Use after a schedule change or if stop data
+    looks stale. Downloads are otherwise refreshed automatically every 24 hours.
+
+purge_history:
+  name: Purge Recorder History
+  description: >
+    Delete Metro North entity history from the recorder database older than
+    keep_days. Runs automatically every 24 hours; call manually to trim existing
+    excess history immediately.
+  fields:
+    keep_days:
+      name: Keep Days
+      description: Retain history this many days back (default from integration options).
+      required: false
+      example: 3
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          unit_of_measurement: days
