@@ -148,17 +148,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ── Recorder retention ─────────────────────────────────────────────────
     keep_days = int(config.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS))
 
-    async def _initial_purge(_event: Any) -> None:
+    async def _purge_callback(_now: Any = None) -> None:
+        """Run recorder purge — safe to use as event-loop callback or task."""
         await _async_purge_recorder(hass, entry, keep_days)
 
     if hass.is_running:
-        hass.async_create_task(_async_purge_recorder(hass, entry, keep_days))
+        hass.async_create_task(_purge_callback())
     else:
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _initial_purge)
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _purge_callback)
 
+    # async_track_time_interval invokes the async callback directly on the
+    # event loop; no async_create_task wrapper needed (that pattern would
+    # cross a thread boundary and trip HA's thread-safety guard).
     unsub_purge = async_track_time_interval(
         hass,
-        lambda _now: hass.async_create_task(_async_purge_recorder(hass, entry, keep_days)),
+        _purge_callback,
         timedelta(hours=24),
     )
     hass.data[DOMAIN].setdefault(_PURGE_UNSUB_KEY, {})[entry.entry_id] = unsub_purge
