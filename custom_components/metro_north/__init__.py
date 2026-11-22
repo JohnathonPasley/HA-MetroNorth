@@ -91,6 +91,10 @@ async def _async_purge_recorder(hass: HomeAssistant, entry: ConfigEntry, keep_da
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    _LOGGER.warning(
+        "The MTA Metro North custom integration is DEPRECATED and no longer maintained. "
+        "Please remove it from HACS and your configuration. See the README for details."
+    )
     hass.data.setdefault(DOMAIN, {})
 
     # ── One-time migration cleanup ─────────────────────────────────────────
