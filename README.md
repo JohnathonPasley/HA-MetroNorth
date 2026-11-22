@@ -1,5 +1,19 @@
 # MTA Metro North — Home Assistant Integration
 
+> ## ⚠️ DEPRECATED — No Longer Maintained
+>
+> **This integration is deprecated as of November 2026 and will not receive further updates.**
+>
+> We moved to a better solution outside of Home Assistant. No replacement integration is planned.
+>
+> **What this means for existing users:**
+> - The integration will keep working as long as the MTA GTFS-RT feeds remain available at their current URLs, but no bug fixes, feature work, or Home Assistant core-compatibility updates will be made.
+> - Remove the integration from HACS and from your HA configuration when convenient.
+>
+> Thanks to everyone who used it.
+
+---
+
 A custom Home Assistant integration that delivers real-time train data for MTA Metro North Railroad stations via the MTA GTFS-Realtime (GTFS-RT) feed.
 
 ---
